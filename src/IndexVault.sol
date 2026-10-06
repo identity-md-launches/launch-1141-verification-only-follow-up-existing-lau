@@ -12,7 +12,8 @@ import {IAssetRegistry, ITimelockedAdmin, Param} from "./interfaces/IIndex.sol";
 /// @notice Holds the reserve asset and the basket, and issues ERC-20 index shares against them.
 /// @dev Deposits are in the reserve asset and priced at oracle NAV. Redemptions are in kind: a
 /// redeemer receives their pro-rata slice of the reserve and of every held token. That needs no
-/// oracle, keeper, signer or swarm, and is never paused, so holders can always leave.
+/// oracle, keeper, signer or swarm, and is never paused. New shares must pass their deposit block
+/// before transfer or redemption; existing shares stay liquid during subsequent deposits.
 /// The only party that can move assets other than a redeemer is the executor contract named in the
 /// TimelockedAdmin, and only through `beginTrade` / `endTrade`, which hold the vault locked for the
 /// duration of a swap. The timelock itself has no withdrawal function here.
@@ -42,6 +43,10 @@ contract IndexVault is ERC20 {
     bool private _assetChecked;
     uint256 private _lock = IDLE;
     address[] private _held;
+    /// @notice Only shares minted in the current block are locked; unsolicited dust deposits
+    /// cannot lock a receiver's older shares. Transfers cannot bypass the mint holding period.
+    mapping(address account => uint256) public depositBlock;
+    mapping(address account => uint256) public mintedThisBlock;
 
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 fee, uint256 shares);
     event Redeemed(address indexed caller, address indexed receiver, uint256 shares);
@@ -69,6 +74,7 @@ contract IndexVault is ERC20 {
     error NotHeld(address token);
     error HeldListFull();
     error NotRescuable();
+    error SharesLocked();
 
     modifier nonReentrant() {
         if (_lock != IDLE) revert Locked();
@@ -104,8 +110,8 @@ contract IndexVault is ERC20 {
     // ---------------------------------------------------------------- deposit
 
     /// @notice Deposits `assets` of the reserve asset and mints shares at oracle NAV.
-    /// @dev Closed while paused, while no guardian is set, and while any held token lacks a fresh
-    /// price: a deposit that cannot be priced fairly is refused rather than guessed.
+    /// @dev Closed while paused, while no guardian is set, and while a held position is confirmed
+    /// quarantined, unreadable or lacks a fresh price. Uncertain value is not sold to new depositors.
     /// @param minShares Reverts if fewer shares would be minted.
     function deposit(uint256 assets, address receiver, uint256 minShares)
         external
@@ -117,7 +123,10 @@ contract IndexVault is ERC20 {
         if (receiver == address(0)) revert ZeroAddress();
         if (assets == 0) revert ZeroAmount();
         if (!_assetChecked) {
-            if (IERC20Metadata(asset).decimals() + 6 != _shareDecimals) revert DecimalsMismatch();
+            if (
+                IERC20Metadata(asset).decimals() + 6 != _shareDecimals
+                    || registry.reserveDecimals() + 6 != _shareDecimals || registry.reserveAsset() != asset
+            ) revert DecimalsMismatch();
             _assetChecked = true;
         }
 
@@ -134,13 +143,16 @@ contract IndexVault is ERC20 {
         shares = Math.mulDiv(received - fee, totalSupply() + VIRTUAL_SHARES, navBefore + 1);
         if (shares == 0 || shares < minShares) revert InsufficientShares(shares, minShares);
         _mint(receiver, shares);
+        if (depositBlock[receiver] != block.number) mintedThisBlock[receiver] = 0;
+        depositBlock[receiver] = block.number;
+        mintedThisBlock[receiver] += shares;
         emit Deposited(msg.sender, receiver, received, fee, shares);
     }
 
     // ---------------------------------------------------------------- redeem
 
     /// @notice Burns `shares` and pays the caller's pro-rata slice of the reserve and every held token.
-    /// @param strict When true, any token whose transfer fails reverts the redemption. When false, such
+    /// @param strict When true, any token whose balance read or transfer fails reverts redemption. When false, such
     /// a token is skipped and the redeemer forfeits that slice to the remaining holders; this is the
     /// exit of last resort when a held token has become untransferable.
     function redeem(uint256 shares, address receiver, bool strict) external nonReentrant {
@@ -158,7 +170,13 @@ contract IndexVault is ERC20 {
         uint256 n = _held.length;
         for (uint256 i; i < n; ++i) {
             address token = _held[i];
-            (uint256 balance,) = _balanceOf(token);
+            (uint256 balance, bool readable) = _balanceOf(token);
+            if (!readable) {
+                if (strict) revert TransferFailed(token);
+                // Zero denotes an unknown skipped amount when the balance cannot be read.
+                emit RedemptionSkipped(receiver, token, 0);
+                continue;
+            }
             amount = Math.mulDiv(balance, shares, supply);
             if (amount == 0) continue;
             if (_tryTransfer(token, receiver, amount)) {
@@ -234,8 +252,8 @@ contract IndexVault is ERC20 {
         return false;
     }
 
-    /// @notice Net asset value in reserve units. `complete` is false when a held token has no fresh
-    /// price; that token is then counted as zero and deposits are closed.
+    /// @notice Net asset value in reserve units. `complete` is false for a nonempty held position
+    /// that is confirmed-quarantined, unreadable or unpriced. Its value is omitted and deposits close.
     function nav() external view returns (uint256 value, bool complete) {
         if (_lock == TRADING) revert Locked();
         address unpriced;
@@ -305,6 +323,14 @@ contract IndexVault is ERC20 {
 
     // ---------------------------------------------------------------- internals
 
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && depositBlock[from] == block.number) {
+            uint256 balance = balanceOf(from);
+            if (value > balance || balance - value < mintedThisBlock[from]) revert SharesLocked();
+        }
+        super._update(from, to, value);
+    }
+
     /// @return value NAV counting unpriced tokens as zero.
     /// @return unpriced The first held token with a non-zero balance and no fresh price, if any.
     function _nav() private view returns (uint256 value, address unpriced) {
@@ -314,6 +340,10 @@ contract IndexVault is ERC20 {
             address token = _held[i];
             (uint256 balance, bool ok) = _balanceOf(token);
             if (ok && balance == 0) continue;
+            if (registry.isQuarantined(token)) {
+                if (unpriced == address(0)) unpriced = token;
+                continue;
+            }
             uint256 tokenValue;
             if (ok) (tokenValue, ok) = registry.convert(token, balance, asset);
             if (ok) value += tokenValue;

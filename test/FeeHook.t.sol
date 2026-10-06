@@ -54,7 +54,9 @@ abstract contract FeeHookBase is Fixture {
         (address reserve, uint8 decimals, address weth, address quoteCurrency) = _currencies();
         quote = quoteCurrency;
         _deploySystem(reserve, decimals, weth, quoteCurrency);
-        _gov(address(tl), abi.encodeCall(tl.setGuardian, (GUARDIAN)));
+        _queue(address(tl), abi.encodeCall(tl.setGuardian, (GUARDIAN)));
+        _queue(address(tl), abi.encodeCall(tl.setKeeper, (KEEPER, true)));
+        _flush();
 
         (bytes32 salt, bool found) = hookDeployer.findSalt(0, 400_000);
         assertTrue(found, "no salt found");
@@ -113,6 +115,40 @@ abstract contract FeeHookBase is Fixture {
         quoteMoved = buy ? quoteBefore - quoteAfter : quoteAfter - quoteBefore;
         tokenMoved = buy ? tokenAfter - tokenBefore : tokenBefore - tokenAfter;
         fee = _quoteBalance(address(waterfall)) - feesBefore;
+    }
+
+    function test_quoteSpecifiedExactOutputPartialFillRevertsAtomically() public {
+        bool zeroForOne = !hook.quoteIsCurrency0();
+        _assertPartialRefused(
+            SwapParams(
+                zeroForOne,
+                1000 ether,
+                zeroForOne ? SQRT_PRICE_1_1 - SQRT_PRICE_1_1 / 1e6 : SQRT_PRICE_1_1 + SQRT_PRICE_1_1 / 1e6
+            )
+        );
+    }
+
+    function test_quoteSpecifiedExactInputExhaustedRangeRevertsAtomically() public {
+        _fund(trader, 2_000_000 ether);
+        bool zeroForOne = hook.quoteIsCurrency0();
+        _assertPartialRefused(
+            SwapParams(
+                zeroForOne, -1_000_000 ether, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            )
+        );
+    }
+
+    function _assertPartialRefused(SwapParams memory params) private {
+        uint256 quoteBefore = _quoteBalance(trader);
+        uint256 tokenBefore = imdex.balanceOf(trader);
+        uint256 feesBefore = _quoteBalance(address(waterfall));
+        uint256 value = quote == address(0) ? quoteBefore : 0;
+        vm.prank(trader);
+        (bool ok,) = address(v4).call{value: value}(abi.encodeCall(v4.swap, (key, params)));
+        assertFalse(ok, "partial fill charged full requested fee");
+        assertEq(_quoteBalance(trader), quoteBefore);
+        assertEq(imdex.balanceOf(trader), tokenBefore);
+        assertEq(_quoteBalance(address(waterfall)), feesBefore);
     }
 
     function _lastSwapLpFee() internal view returns (uint24 lpFee) {
@@ -344,6 +380,7 @@ abstract contract FeeHookBase is Fixture {
             collected
         );
 
+        vm.prank(KEEPER);
         uint256 shares = waterfall.pushBasketReserve(0);
         assertEq(vault.balanceOf(address(tl)), shares);
         assertEq(IERC20(reserve).balanceOf(address(vault)), basket);

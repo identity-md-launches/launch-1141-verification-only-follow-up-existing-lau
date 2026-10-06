@@ -35,6 +35,8 @@ contract TimelockedAdmin {
     mapping(address account => Role) public roleOf;
     /// @notice Timestamp at which a scheduled operation becomes executable; zero when not scheduled.
     mapping(bytes32 id => uint256) public readyAt;
+    /// @dev Recovery calls remain delayed but cannot be vetoed by the guardian being replaced.
+    mapping(bytes32 id => bool) public recoveryOperation;
 
     event Scheduled(
         bytes32 indexed id, address indexed target, uint256 value, bytes data, bytes32 salt, uint256 readyAt
@@ -66,6 +68,7 @@ contract TimelockedAdmin {
     error RoleNotHeld();
     error InvalidQuorum();
     error NotAContract();
+    error RecoveryCannotBeVetoed();
 
     modifier onlyAdminWallet() {
         if (msg.sender != admin) revert NotAdmin();
@@ -115,6 +118,8 @@ contract TimelockedAdmin {
         if (readyAt[id] != 0) revert AlreadyScheduled();
         uint256 ready = block.timestamp + delay;
         readyAt[id] = ready;
+        recoveryOperation[id] = target == address(this) && value == 0 && data.length >= 4
+            && (bytes4(data[:4]) == this.setGuardian.selector || bytes4(data[:4]) == this.unpause.selector);
         emit Scheduled(id, target, value, data, salt, ready);
     }
 
@@ -130,6 +135,7 @@ contract TimelockedAdmin {
         if (block.timestamp > ready + GRACE_PERIOD) revert OperationExpired();
         if (data.length != 0 && target.code.length == 0) revert TargetHasNoCode();
         delete readyAt[id];
+        delete recoveryOperation[id];
 
         bool ok;
         (ok, result) = target.call{value: value}(data);
@@ -142,11 +148,14 @@ contract TimelockedAdmin {
         emit Executed(id, target, value, data);
     }
 
-    /// @notice The admin can withdraw its own operation; the guardian can veto any operation.
+    /// @notice The admin can withdraw any operation. Guardian veto excludes delayed guardian
+    /// replacement and unpause calls to this timelock, so governance can recover from a hostile key.
     function cancel(bytes32 id) external {
         if (msg.sender != admin && msg.sender != guardian) revert NotAuthorized();
         if (readyAt[id] == 0) revert NotScheduled();
+        if (msg.sender == guardian && recoveryOperation[id]) revert RecoveryCannotBeVetoed();
         delete readyAt[id];
+        delete recoveryOperation[id];
         emit Cancelled(id, msg.sender);
     }
 

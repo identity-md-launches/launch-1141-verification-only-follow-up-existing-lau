@@ -3,7 +3,7 @@ pragma solidity 0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IEpochManager, IIndexVault, ITimelockedAdmin, IWETH} from "./interfaces/IIndex.sol";
+import {IEpochManager, IIndexVault, ITimelockedAdmin, IWETH, Role} from "./interfaces/IIndex.sol";
 
 /// @title FeeWaterfall
 /// @notice Holds the on-chain fee split and divides the fees the hook collects.
@@ -12,7 +12,7 @@ import {IEpochManager, IIndexVault, ITimelockedAdmin, IWETH} from "./interfaces/
 /// The liquidity-provider share never reaches this contract: the hook applies it as the pool's LP fee,
 /// so in-range LPs earn it natively. What arrives here is the other 75%, in the reserve asset, and is
 /// divided between the four remaining buckets in proportion to their shares.
-/// The basket bucket accumulates in the reserve asset until anyone pushes it into the vault, where it
+/// The basket bucket accumulates in the reserve asset until a keeper or timelock pushes it into the vault, where it
 /// is deposited at NAV for shares owned by the timelock treasury. Nothing is traded here.
 contract FeeWaterfall {
     using SafeERC20 for IERC20;
@@ -70,6 +70,7 @@ contract FeeWaterfall {
     error NothingToSend();
     error NotRescuable();
     error EthTransferFailed();
+    error NotAuthorized();
 
     modifier onlyAdmin() {
         if (msg.sender != address(admin)) revert NotTimelock();
@@ -118,8 +119,10 @@ contract FeeWaterfall {
     }
 
     /// @notice Deposits the accumulated basket reserve into the vault. The shares go to the timelock
-    /// treasury. Reverts, leaving the reserve here, whenever the vault is not accepting deposits.
+    /// treasury. Keeper/timelock only; the caller chooses timing and a share floor after checking
+    /// feed/market divergence. Reverts, leaving the reserve here, when deposits are closed.
     function pushBasketReserve(uint256 minShares) external nonReentrant returns (uint256 shares) {
+        if (msg.sender != address(admin) && admin.roleOf(msg.sender) != Role.Keeper) revert NotAuthorized();
         _distribute();
         uint256 amount = accrued[Bucket.Basket];
         if (amount == 0) revert NothingToSend();

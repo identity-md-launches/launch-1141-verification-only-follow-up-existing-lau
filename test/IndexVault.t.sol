@@ -303,6 +303,7 @@ contract IndexVaultTest is Fixture {
         }
         uint256 shares = vault.deposit(assets, BOB, 0);
         assertEq(shares, expected);
+        vm.roll(block.number + 1);
         vault.redeem(shares, BOB, true);
         vm.stopPrank();
 

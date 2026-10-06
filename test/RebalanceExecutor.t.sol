@@ -281,7 +281,8 @@ contract RebalanceExecutorTest is Fixture {
             (bool ok,) = executor.executeTrade(address(usdc), t0, 100_000 * USDC_UNIT, 0, address(router), bad);
             assertFalse(ok);
         }
-        assertTrue(registry.isQuarantined(t0));
+        assertTrue(registry.isAutoQuarantined(t0));
+        assertFalse(registry.isQuarantined(t0));
         assertEq(executor.failureCount(t0), 3);
 
         _expectTradeRevert(
@@ -293,7 +294,7 @@ contract RebalanceExecutorTest is Fixture {
             assertTrue(vault.isHeld(address(tokens[i])));
         }
         (,, uint256 target) = executor.position(t0);
-        assertEq(target, 0);
+        assertApproxEqAbs(target, 196_000 * USDC_UNIT, 1000, "router failures do not rewrite the signed target");
     }
 
     function test_quarantinedPositionCanBeExitedAtAnyTime() public {

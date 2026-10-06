@@ -24,7 +24,8 @@ uint160 constant ALL_HOOK_FLAGS = (1 << 14) - 1;
 /// @dev The fee read from the waterfall has two parts. The liquidity providers' part is returned as
 /// the pool's LP fee for the swap (the pool must be a dynamic-fee pool). The rest is taken by the hook
 /// from whichever side of the swap is the quote currency: in `beforeSwap` when the quote currency is
-/// the specified amount, in `afterSwap` when it is the unspecified one. The hook holds no funds, has
+/// the specified amount (requiring a full fee-adjusted fill), in `afterSwap` when it is the
+/// unspecified one. Partial quote-specified fills revert atomically. The hook holds no funds, has
 /// no owner and no configuration of its own.
 contract FeeHook is IHooks {
     uint160 public constant REQUIRED_FLAGS = FEE_HOOK_FLAGS;
@@ -73,6 +74,7 @@ contract FeeHook is IHooks {
     error WrongPool();
     error HookNotImplemented();
     error FeeOverflow();
+    error PartialFill();
 
     modifier onlyPoolManager() {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
@@ -149,7 +151,17 @@ contract FeeHook is IHooks {
         BalanceDelta swapDelta,
         bytes calldata
     ) external onlyPoolManager returns (bytes4, int128) {
-        if (_quoteIsSpecified(params)) return (IHooks.afterSwap.selector, 0);
+        if (_quoteIsSpecified(params)) {
+            // beforeSwap adjusted the pool request by its positive specified fee delta. v4 passes
+            // the raw pool delta here, before subtracting that fee. Refuse any unfilled request;
+            // reverting also undoes the provisional collection and every fee-accounting event.
+            uint256 requested =
+                params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+            uint256 fee = requested * _feeQuote().hookFeePips / PIPS;
+            int256 filled = quoteIsCurrency0 ? swapDelta.amount0() : swapDelta.amount1();
+            if (filled != params.amountSpecified + int256(fee)) revert PartialFill();
+            return (IHooks.afterSwap.selector, 0);
+        }
 
         // The quote currency is the unspecified amount: charge the fee on what the swap produced.
         int256 quoteDelta = quoteIsCurrency0 ? swapDelta.amount0() : swapDelta.amount1();

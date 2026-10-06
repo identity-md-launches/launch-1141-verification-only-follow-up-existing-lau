@@ -75,6 +75,7 @@ contract Handler is Test {
     }
 
     function redeem(uint256 actorSeed, uint256 fraction) external {
+        vm.roll(block.number + 1);
         address actor = actors[actorSeed % 3];
         uint256 shares = vault.balanceOf(actor) * bound(fraction, 1, 100) / 100;
         if (shares == 0) return;
@@ -155,6 +156,7 @@ contract Handler is Test {
     function pushBasketReserve() external {
         uint256 amount = waterfall.accrued(FeeWaterfall.Bucket.Basket);
         uint256 before = _perShare();
+        vm.prank(keeper);
         try waterfall.pushBasketReserve(0) {
             pushedToVault += amount;
             if (_perShare() < before) _flag("fee deposit lowered NAV per share");

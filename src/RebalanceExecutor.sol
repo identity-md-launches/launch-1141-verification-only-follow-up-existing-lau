@@ -19,13 +19,15 @@ import {IAssetRegistry, IEpochManager, IIndexVault, ITimelockedAdmin, Param, Rol
 ///  - routers are allowlisted by the timelock and approved for exactly the amount sold;
 ///  - trades happen inside the rebalance window that opens with a new epoch or once per interval.
 /// A trade whose swap reverts or under-delivers is undone and counted; after `FailureThreshold`
-/// consecutive failures the token is quarantined instead of blocking the rest of the basket.
+/// consecutive failures further buys are blocked. Only confirmed quarantine zeroes its target;
+/// keeper-controlled route failures cannot grant exits or veto signed proposals.
 contract RebalanceExecutor {
     using SafeERC20 for IERC20;
 
     uint256 public constant BPS = 10_000;
     /// @dev Mirrors IndexVault.MAX_HELD.
     uint256 private constant MAX_HELD = 10;
+    uint256 private constant BALANCE_GAS = 500_000;
 
     ITimelockedAdmin public immutable admin;
     IAssetRegistry public immutable registry;
@@ -37,6 +39,7 @@ contract RebalanceExecutor {
     uint64 public windowStart;
     uint64 public windowEpoch;
     mapping(address token => uint256) public failureCount;
+    mapping(address token => uint256) private _failureVersion;
     uint256 private _lock = 1;
 
     event TradeExecuted(
@@ -115,6 +118,11 @@ contract RebalanceExecutor {
         if (oracleMinOut > minOut) minOut = oracleMinOut;
 
         address token = sellToken == reserve ? buyToken : sellToken;
+        uint256 version = registry.quarantineVersion(token);
+        if (_failureVersion[token] != version) {
+            delete failureCount[token];
+            _failureVersion[token] = version;
+        }
         try this.swapThroughRouter(sellToken, buyToken, sellAmount, minOut, router, data) returns (uint256 out) {
             delete failureCount[token];
             emit TradeExecuted(sellToken, buyToken, router, sellAmount, out, minOut);
@@ -122,7 +130,10 @@ contract RebalanceExecutor {
         } catch (bytes memory reason) {
             emit TradeFailed(sellToken, buyToken, router, sellAmount, reason);
             uint256 failures = ++failureCount[token];
-            if (failures >= registry.param(Param.FailureThreshold) && !registry.isQuarantined(token)) {
+            if (
+                failures >= registry.param(Param.FailureThreshold) && !registry.isQuarantined(token)
+                    && !registry.isAutoQuarantined(token)
+            ) {
                 registry.quarantine(token);
                 emit AutoQuarantined(token, failures);
             }
@@ -195,7 +206,7 @@ contract RebalanceExecutor {
     // ---------------------------------------------------------------- rules
 
     /// @notice What the rules would allow right now for one token, in reserve units.
-    /// @return nav Vault NAV as the executor counts it (unpriced quarantined positions count as zero).
+    /// @return nav Vault NAV as the executor counts it (confirmed-quarantined positions count as zero).
     /// @return current Value currently held in `token`.
     /// @return target Value the active basket assigns to `token`.
     function position(address token) external view returns (uint256 nav, uint256 current, uint256 target) {
@@ -220,7 +231,7 @@ contract RebalanceExecutor {
         if (sellToken == reserve) {
             // Buying a member: bounded by its deficit and by the reserve above the buffer.
             if (epochs.targetWeightBps(buyToken) == 0 || !registry.isApproved(buyToken)) revert NotBuyable(buyToken);
-            if (registry.isQuarantined(buyToken)) revert NotBuyable(buyToken);
+            if (registry.isQuarantined(buyToken) || registry.isAutoQuarantined(buyToken)) revert NotBuyable(buyToken);
             if (!vault.isHeld(buyToken) && vault.heldTokens().length >= MAX_HELD) revert HeldListFull();
             uint256 target = _target(buyToken, nav);
             uint256 current = _valueOf(buyToken);
@@ -236,12 +247,12 @@ contract RebalanceExecutor {
             // Selling a token: only the part above its target.
             if (!vault.isHeld(sellToken)) revert NotHeld(sellToken);
             uint256 target = _target(sellToken, nav);
-            uint256 balance = IERC20(sellToken).balanceOf(address(vault));
+            uint256 balance = _balanceOf(sellToken);
             (uint256 current, bool priced) = registry.convert(sellToken, balance, reserve);
             if (!priced) revert PriceUnavailable();
-            if (current <= target) revert NothingToTrade();
-            uint256 excess = current - target;
             exit = target == 0;
+            if (!exit && current <= target) revert NothingToTrade();
+            uint256 excess = current - target;
             if (exit) {
                 if (sellAmount > balance) revert ExceedsDelta(sellAmount, balance);
             } else {
@@ -260,21 +271,21 @@ contract RebalanceExecutor {
 
         (uint256 fair, bool ok) = registry.convert(sellToken, sellAmount, buyToken);
         if (!ok) revert PriceUnavailable();
-        // A sale too small to be worth one unit of the bought token would have no floor at all.
-        if (fair == 0) revert NothingToTrade();
+        // Only the entire remainder of a zero-target position may clear without a value floor.
+        if (fair == 0 && !(exit && sellAmount == _balanceOf(sellToken))) revert NothingToTrade();
         oracleMinOut = Math.mulDiv(fair, BPS - registry.param(Param.MaxSlippageBps), BPS, Math.Rounding.Ceil);
     }
 
     function _requireWindow() private {
         uint64 current = epochs.epoch();
         if (current == 0) revert NoActiveBasket();
-        if (current != windowEpoch) {
+        uint256 anchor = epochs.activatedAt();
+        uint256 interval = registry.param(Param.RebalanceInterval);
+        uint256 start = anchor + ((block.timestamp - anchor) / interval) * interval;
+        if (block.timestamp > start + registry.param(Param.RebalanceWindow)) revert WindowClosed();
+        if (current != windowEpoch || windowStart != start) {
             windowEpoch = current;
-            windowStart = uint64(block.timestamp);
-            emit WindowOpened(current, windowStart);
-        } else if (block.timestamp > windowStart + registry.param(Param.RebalanceWindow)) {
-            if (block.timestamp < windowStart + registry.param(Param.RebalanceInterval)) revert WindowClosed();
-            windowStart = uint64(block.timestamp);
+            windowStart = uint64(start);
             emit WindowOpened(current, windowStart);
         }
     }
@@ -296,18 +307,21 @@ contract RebalanceExecutor {
     }
 
     function _valueOf(address token) private view returns (uint256 value) {
-        uint256 balance = IERC20(token).balanceOf(address(vault));
+        if (token != reserve && !vault.isHeld(token)) return 0;
+        uint256 balance = _balanceOf(token);
         if (token == reserve || balance == 0) return balance;
         (value,) = registry.convert(token, balance, reserve);
     }
 
-    /// @dev A held token without a price must be quarantined before the rest can trade; once it is,
-    /// it counts as zero so that it cannot inflate the other targets.
+    /// @dev Confirmed-quarantined positions count as zero and are skipped before balance reads.
+    /// Automatic buy blocks retain their value and target; all other balance reads are gas-capped.
     function _nav() private view returns (uint256 nav) {
         nav = IERC20(reserve).balanceOf(address(vault));
         address[] memory held = vault.heldTokens();
         for (uint256 i; i < held.length; ++i) {
-            (bool ok, bytes memory ret) = held[i].staticcall(abi.encodeCall(IERC20.balanceOf, (address(vault))));
+            if (registry.isQuarantined(held[i])) continue;
+            (bool ok, bytes memory ret) =
+                held[i].staticcall{gas: BALANCE_GAS}(abi.encodeCall(IERC20.balanceOf, (address(vault))));
             uint256 value;
             if (ok && ret.length >= 32) {
                 uint256 balance = abi.decode(ret, (uint256));
@@ -317,7 +331,14 @@ contract RebalanceExecutor {
                 ok = false;
             }
             if (ok) nav += value;
-            else if (!registry.isQuarantined(held[i])) revert UnpricedHolding(held[i]);
+            else revert UnpricedHolding(held[i]);
         }
+    }
+
+    function _balanceOf(address token) private view returns (uint256) {
+        (bool ok, bytes memory ret) =
+            token.staticcall{gas: BALANCE_GAS}(abi.encodeCall(IERC20.balanceOf, (address(vault))));
+        if (!ok || ret.length < 32) revert UnpricedHolding(token);
+        return abi.decode(ret, (uint256));
     }
 }

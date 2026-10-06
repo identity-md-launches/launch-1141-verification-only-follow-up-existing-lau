@@ -113,7 +113,7 @@ contract FeeWaterfallTest is Fixture {
     function test_basketReserveIsDepositedAtNavForTheTreasury() public {
         _deposit(ALICE, 1000 * USDC_UNIT);
         _fees(75 * USDC_UNIT);
-        vm.prank(BOB);
+        vm.prank(KEEPER);
         uint256 shares = waterfall.pushBasketReserve(0);
         assertEq(shares, 40 * 1e12);
         assertEq(vault.balanceOf(address(tl)), shares, "shares belong to the timelock treasury");
@@ -125,6 +125,7 @@ contract FeeWaterfallTest is Fixture {
         (uint256 perShare,) = vault.navPerShare();
         assertEq(perShare, USDC_UNIT);
 
+        vm.prank(KEEPER);
         vm.expectRevert(FeeWaterfall.NothingToSend.selector);
         waterfall.pushBasketReserve(0);
     }
@@ -133,6 +134,7 @@ contract FeeWaterfallTest is Fixture {
         _fees(75 * USDC_UNIT);
         vm.prank(GUARDIAN);
         tl.pause();
+        vm.prank(KEEPER);
         vm.expectRevert(IndexVault.Paused.selector);
         waterfall.pushBasketReserve(0);
 
@@ -141,11 +143,13 @@ contract FeeWaterfallTest is Fixture {
         assertEq(_accrued(FeeWaterfall.Bucket.Basket), 80 * USDC_UNIT);
         vm.prank(GUARDIAN);
         tl.unpause();
+        vm.prank(KEEPER);
         assertEq(waterfall.pushBasketReserve(80 * 1e12), 80 * 1e12);
     }
 
     function test_pushHonoursMinShares() public {
         _fees(75 * USDC_UNIT);
+        vm.prank(KEEPER);
         vm.expectRevert(abi.encodeWithSelector(IndexVault.InsufficientShares.selector, 40 * 1e12, 40 * 1e12 + 1));
         waterfall.pushBasketReserve(40 * 1e12 + 1);
     }

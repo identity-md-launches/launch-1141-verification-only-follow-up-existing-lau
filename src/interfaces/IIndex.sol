@@ -54,10 +54,13 @@ interface ITimelockedAdmin {
 
 interface IAssetRegistry {
     function reserveAsset() external view returns (address);
+    function reserveDecimals() external view returns (uint8);
     function param(Param key) external view returns (uint256);
     function methodologyVersion() external view returns (uint32);
     function isApproved(address token) external view returns (bool);
     function isQuarantined(address token) external view returns (bool);
+    function isAutoQuarantined(address token) external view returns (bool);
+    function quarantineVersion(address token) external view returns (uint256);
     function isRouterApproved(address router) external view returns (bool);
     function maxWeightBps(address token) external view returns (uint16);
     function isEligible(address token) external view returns (bool);
@@ -67,6 +70,7 @@ interface IAssetRegistry {
 
 interface IEpochManager {
     function epoch() external view returns (uint64);
+    function activatedAt() external view returns (uint64);
     function targetWeightBps(address token) external view returns (uint16);
     function basketStale() external view returns (bool);
 }

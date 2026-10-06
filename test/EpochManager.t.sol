@@ -134,6 +134,7 @@ contract EpochManagerTest is Fixture {
 
     function test_activationFailsOnceExpiredButSucceedsAtTheExpirySecond() public {
         EpochManager.Proposal memory p = _top();
+        p.expiry = uint64(block.timestamp + 12 hours);
         _publish(p);
         vm.warp(p.expiry + 1);
         _touchFeeds();
@@ -473,7 +474,8 @@ contract EpochManagerTest is Fixture {
 
     function test_staleFeedAtActivationBlocksActivation() public {
         _publish(_top());
-        skip(1 days + 1); // feeds are not refreshed
+        skip(6 hours);
+        feeds[0].setUpdatedAt(block.timestamp - 1 days - 1); // fresh research, stale feed
         vm.expectRevert(abi.encodeWithSelector(EpochManager.NotEligible.selector, address(tokens[0])));
         epochs.activate();
     }

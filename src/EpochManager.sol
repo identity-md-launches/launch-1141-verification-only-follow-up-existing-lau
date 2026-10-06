@@ -181,6 +181,7 @@ contract EpochManager is EIP712 {
         if (q.proposalHash == bytes32(0)) revert NoPendingProposal();
         if (block.timestamp < q.readyAt) revert NotReady();
         if (block.timestamp > q.expiry) revert ProposalExpired();
+        if (block.timestamp - q.snapshotTime > registry.param(Param.MaxSnapshotAge)) revert StaleSnapshot();
         if (_active.activatedAt != 0) {
             if (block.timestamp < _active.activatedAt + registry.param(Param.RebalanceInterval)) {
                 revert TooSoonSinceLastEpoch();
@@ -276,6 +277,10 @@ contract EpochManager is EIP712 {
         return _active.epoch;
     }
 
+    function activatedAt() external view returns (uint64) {
+        return _active.activatedAt;
+    }
+
     function activeBasket() external view returns (Basket memory) {
         return _active;
     }
@@ -320,8 +325,8 @@ contract EpochManager is EIP712 {
     function _checkBasket(Proposal calldata p) private view {
         uint256 n = p.tokens.length;
         if (
-            n > MAX_ASSETS || p.weightsBps.length != n || p.marketCapsUsd.length != n || p.liquidityUsd.length != n
-                || p.volumesUsd.length != n || p.dataHash == bytes32(0)
+            n == 0 || n > MAX_ASSETS || p.weightsBps.length != n || p.marketCapsUsd.length != n
+                || p.liquidityUsd.length != n || p.volumesUsd.length != n || p.dataHash == bytes32(0)
         ) revert Malformed();
 
         uint256 minCap = registry.param(Param.MinMarketCapUsd);

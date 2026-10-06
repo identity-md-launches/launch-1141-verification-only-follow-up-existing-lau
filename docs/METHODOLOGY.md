@@ -11,7 +11,8 @@ its inputs and outputs are committed to by the `dataHash` every proposal carries
 
 Ethereum ecosystem assets only: ERC-20 tokens on Ethereum mainnet whose value derives from Ethereum
 infrastructure, scaling, DeFi, staking or applications. Stablecoins, wrapped versions of non-Ethereum
-assets and the reserve asset are excluded. At most five assets are held (on-chain: `MAX_ASSETS = 5`).
+assets and the reserve asset are excluded. Proposals contain one to five assets (on-chain: `MAX_ASSETS = 5`);
+empty baskets cannot reset the additions limit.
 
 ## 2. Eligibility
 
@@ -33,7 +34,9 @@ unverifiable circulating supply, suspicious volume, inadequate liquidity, a fail
 hidden fees, blocklists that can be applied to the vault), or an unresolved critical incident.
 On-chain, exclusion takes the form of not approving the token, revoking it, or quarantining it; a
 quarantined or revoked token cannot appear in a proposal and cannot be bought. The swarm research
-score is 5% of the ranking and has no path around these checks.
+score is 5% of the ranking and has no path around these checks. Executor-reported routing failures
+set the separate `isAutoQuarantined` buy block; they do not prove an asset incident or change
+proposal eligibility. The guardian investigates and confirms a hard quarantine where warranted.
 
 ## 3. Ranking
 
@@ -67,12 +70,16 @@ market cap.
 - **Rebalance thresholds (on-chain).** A position is traded only when it is away from target by at
   least `DriftThresholdBps` (start: 250) of NAV, or when membership changed. Trading happens in a
   `RebalanceWindow` (start: 2 days) that opens with a new epoch or once per `RebalanceInterval`
-  (start: 7 days). Research and ranking are daily; execution is weekly.
+  (start: 7 days). Window starts are `activatedAt + k * RebalanceInterval`, for integer k ≥ 0;
+  delaying the first trade cannot shift the schedule. Research and ranking are daily; execution is weekly.
 
 ## 5. Snapshot, sources and supply
 
 - **Snapshot time.** 00:00 UTC daily. A proposal's `snapshotTime` must be within `MaxSnapshotAge`
-  (start: 1 day) of publication and newer than the active basket's (on-chain).
+  (start: 1 day) at both publication and activation, and newer than the active basket's (on-chain).
+  Expiry does not extend research freshness. Publish fresh research near the weekly activation time.
+  `ProposalDelay` is bounded to 1 hour–7 days minus 1 hour and must be strictly less than
+  `MaxSnapshotAge`; lowering snapshot age below or equal to the delay is refused.
 - **Prices.** The Chainlink feed configured for the token on-chain is authoritative for execution and
   NAV. For ranking, the median of at least three independent sources at the snapshot.
 - **Circulating supply.** `totalSupply()` at the snapshot block minus balances of: the token contract,

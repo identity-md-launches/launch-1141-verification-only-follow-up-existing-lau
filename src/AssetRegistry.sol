@@ -41,6 +41,10 @@ contract AssetRegistry {
     bytes32 public methodologyHash;
 
     mapping(address token => Asset) private _assets;
+    /// @notice Router failures block buys only. They are not evidence for liquidation or exclusion.
+    mapping(address token => bool) public isAutoQuarantined;
+    /// @notice Release invalidates the executor's previous failure streak, including across re-entry.
+    mapping(address token => uint256) public quarantineVersion;
     address[] private _listed;
     mapping(address router => bool) public isRouterApproved;
     mapping(Param key => uint256) private _params;
@@ -56,6 +60,7 @@ contract AssetRegistry {
     event TokenRevoked(address indexed token);
     event TokenQuarantined(address indexed token, address indexed by);
     event TokenReleased(address indexed token);
+    event TokenAutoQuarantined(address indexed token);
     event ReserveFeedSet(address indexed feed, uint32 heartbeat);
     event RouterSet(address indexed router, bool approved);
     event ParamSet(Param indexed key, uint256 oldValue, uint256 newValue);
@@ -146,8 +151,10 @@ contract AssetRegistry {
     }
 
     function releaseQuarantine(address token) external onlyAdmin {
-        if (!_assets[token].quarantined) revert NotListed();
+        if (!_assets[token].quarantined && !isAutoQuarantined[token]) revert NotListed();
         _assets[token].quarantined = false;
+        delete isAutoQuarantined[token];
+        ++quarantineVersion[token];
         emit TokenReleased(token);
     }
 
@@ -169,6 +176,8 @@ contract AssetRegistry {
         if (value < lo || value > hi) revert InvalidValue();
         if (key == Param.RebalanceWindow && value > _params[Param.RebalanceInterval]) revert InvalidValue();
         if (key == Param.RebalanceInterval && value < _params[Param.RebalanceWindow]) revert InvalidValue();
+        if (key == Param.ProposalDelay && value >= _params[Param.MaxSnapshotAge]) revert InvalidValue();
+        if (key == Param.MaxSnapshotAge && value <= _params[Param.ProposalDelay]) revert InvalidValue();
         emit ParamSet(key, _params[key], value);
         _params[key] = value;
     }
@@ -182,11 +191,18 @@ contract AssetRegistry {
 
     // ---------------------------------------------------------------- quarantine (tighten only)
 
-    /// @notice Guardian, executor or timelock isolate a token: it can no longer be proposed or
-    /// bought, its target weight is treated as zero, and the executor may only sell it.
+    /// @notice Guardian/timelock confirm an exclusion with a zero target. Executor reports only
+    /// stop further buys: a keeper-controlled router failure cannot change the signed basket.
     function quarantine(address token) external {
         bool allowed = msg.sender == admin.guardian() || msg.sender == address(admin);
-        if (!allowed && admin.roleOf(msg.sender) != Role.Executor) revert NotAuthorized();
+        if (!allowed) {
+            if (admin.roleOf(msg.sender) != Role.Executor) revert NotAuthorized();
+            if (_assets[token].feed == address(0)) revert NotListed();
+            if (isAutoQuarantined[token] || _assets[token].quarantined) revert AlreadyQuarantined();
+            isAutoQuarantined[token] = true;
+            emit TokenAutoQuarantined(token);
+            return;
+        }
         _quarantine(token);
     }
 
@@ -218,7 +234,7 @@ contract AssetRegistry {
         if (key == Param.DriftThresholdBps) return (0, 2_000);
         if (key == Param.MinTokenAge) return (MIN_TOKEN_AGE_FLOOR, 3650 days);
         if (key == Param.MaxSnapshotAge) return (1 hours, 7 days);
-        if (key == Param.ProposalDelay) return (1 hours, 7 days);
+        if (key == Param.ProposalDelay) return (1 hours, 7 days - 1 hours);
         if (key == Param.RebalanceInterval) return (1 days, 90 days);
         if (key == Param.RebalanceWindow) return (1 hours, 90 days);
         if (key == Param.MaxAdditionsPerEpoch) return (1, 5);

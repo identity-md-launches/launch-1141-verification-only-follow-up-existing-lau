@@ -247,6 +247,8 @@ abstract contract Fixture is Test {
         usdc.approve(address(vault), assets);
         shares = vault.deposit(assets, who, 0);
         vm.stopPrank();
+        // Helpers model a settled deposit; atomic lock tests call deposit directly.
+        vm.roll(block.number + 1);
     }
 
     function _fair(address sell, address buy, uint256 amount) internal view returns (uint256 out) {
@@ -269,6 +271,7 @@ abstract contract Fixture is Test {
     function _buyBasket() internal {
         address[] memory members = epochs.activeBasket().tokens;
         for (uint256 i; i < members.length; ++i) {
+            if (registry.isAutoQuarantined(members[i])) continue;
             (, uint256 current, uint256 target) = executor.position(members[i]);
             if (target > current) {
                 (bool ok,) = _trade(address(usdc), members[i], target - current, 10_000);
