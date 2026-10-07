@@ -135,7 +135,7 @@ contract EpochManager is EIP712 {
     /// @param signatures 65-byte ECDSA signatures over `hashProposal(p)`, ordered by ascending signer
     /// address. Every signature must be from a current signer and at least `quorum` are required.
     function publish(Proposal calldata p, bytes[] calldata signatures) external returns (bytes32 proposalHash) {
-        if (admin.paused()) revert Paused();
+        if (_paused()) revert Paused();
         if (_pending.proposalHash != bytes32(0)) {
             if (block.timestamp <= _pending.expiry) revert PendingProposalExists();
             _clearPending(address(0));
@@ -146,25 +146,23 @@ contract EpochManager is EIP712 {
         if (seen[proposalHash]) revert Replayed();
         seen[proposalHash] = true;
 
-        uint256 readyAt = block.timestamp + registry.param(Param.ProposalDelay);
+        uint256 readyAt = block.timestamp + _param(Param.ProposalDelay);
         _checkTiming(p, readyAt);
-        if (p.methodologyVersion != registry.methodologyVersion()) revert WrongMethodology();
-        if (p.signerSetVersion != admin.signerSetVersion()) revert WrongSignerSet();
+        if (p.methodologyVersion != _methodologyVersion()) revert WrongMethodology();
+        if (p.signerSetVersion != _signerSetVersion()) revert WrongSignerSet();
         _checkBasket(p);
         address[] memory signers = _checkQuorum(proposalHash, signatures);
 
-        _pending = Pending({
-            epoch: p.epoch,
-            snapshotTime: p.snapshotTime,
-            readyAt: uint64(readyAt),
-            expiry: p.expiry,
-            methodologyVersion: p.methodologyVersion,
-            signerSetVersion: p.signerSetVersion,
-            proposalHash: proposalHash,
-            dataHash: p.dataHash,
-            tokens: p.tokens,
-            weightsBps: p.weightsBps
-        });
+        _pending.epoch = p.epoch;
+        _pending.snapshotTime = p.snapshotTime;
+        _pending.readyAt = uint64(readyAt);
+        _pending.expiry = p.expiry;
+        _pending.methodologyVersion = p.methodologyVersion;
+        _pending.signerSetVersion = p.signerSetVersion;
+        _pending.proposalHash = proposalHash;
+        _pending.dataHash = p.dataHash;
+        _pending.tokens = p.tokens;
+        _pending.weightsBps = p.weightsBps;
         emit ProposalPublished(
             p.epoch, proposalHash, p.dataHash, p.snapshotTime, uint64(readyAt), p.expiry, p.methodologyVersion, signers
         );
@@ -176,37 +174,35 @@ contract EpochManager is EIP712 {
     /// @notice Makes the pending proposal the active basket once its delay has passed. Permissionless:
     /// the outcome is fully determined by the stored proposal and the rules re-checked here.
     function activate() external {
-        if (admin.paused()) revert Paused();
+        if (_paused()) revert Paused();
         Pending storage q = _pending;
         if (q.proposalHash == bytes32(0)) revert NoPendingProposal();
         if (block.timestamp < q.readyAt) revert NotReady();
         if (block.timestamp > q.expiry) revert ProposalExpired();
-        if (block.timestamp - q.snapshotTime > registry.param(Param.MaxSnapshotAge)) revert StaleSnapshot();
+        if (block.timestamp - q.snapshotTime > _param(Param.MaxSnapshotAge)) revert StaleSnapshot();
         if (_active.activatedAt != 0) {
-            if (block.timestamp < _active.activatedAt + registry.param(Param.RebalanceInterval)) {
+            if (block.timestamp < _active.activatedAt + _param(Param.RebalanceInterval)) {
                 revert TooSoonSinceLastEpoch();
             }
         }
         // A signer revoked or a methodology replaced during the delay invalidates the proposal.
-        if (q.signerSetVersion != admin.signerSetVersion()) revert WrongSignerSet();
-        if (q.methodologyVersion != registry.methodologyVersion()) revert WrongMethodology();
+        if (q.signerSetVersion != _signerSetVersion()) revert WrongSignerSet();
+        if (q.methodologyVersion != _methodologyVersion()) revert WrongMethodology();
 
         uint256 n = q.tokens.length;
         for (uint256 i; i < n; ++i) {
             address token = q.tokens[i];
-            if (!registry.isEligible(token)) revert NotEligible(token);
-            if (q.weightsBps[i] > registry.maxWeightBps(token)) revert OverWeight(token);
+            if (!_isEligible(token)) revert NotEligible(token);
+            if (q.weightsBps[i] > _maxWeightBps(token)) revert OverWeight(token);
         }
 
-        _active = Basket({
-            epoch: q.epoch,
-            snapshotTime: q.snapshotTime,
-            activatedAt: uint64(block.timestamp),
-            proposalHash: q.proposalHash,
-            dataHash: q.dataHash,
-            tokens: q.tokens,
-            weightsBps: q.weightsBps
-        });
+        _active.epoch = q.epoch;
+        _active.snapshotTime = q.snapshotTime;
+        _active.activatedAt = uint64(block.timestamp);
+        _active.proposalHash = q.proposalHash;
+        _active.dataHash = q.dataHash;
+        _active.tokens = q.tokens;
+        _active.weightsBps = q.weightsBps;
         emit EpochActivated(q.epoch, q.proposalHash, q.tokens, q.weightsBps);
         delete _pending;
     }
@@ -230,10 +226,10 @@ contract EpochManager is EIP712 {
     /// @notice Anchors the hash of a quorum-signed daily research report. It changes no basket; it
     /// timestamps the report on-chain and shows the swarm is alive (see `basketStale`).
     function anchorReport(uint64 snapshotTime, bytes32 reportHash, bytes[] calldata signatures) external {
-        if (admin.paused()) revert Paused();
+        if (_paused()) revert Paused();
         if (snapshotTime > block.timestamp) revert SnapshotInFuture();
         if (snapshotTime <= lastReportTime) revert SnapshotNotNewer();
-        if (block.timestamp - snapshotTime > registry.param(Param.MaxSnapshotAge)) revert StaleSnapshot();
+        if (block.timestamp - snapshotTime > _param(Param.MaxSnapshotAge)) revert StaleSnapshot();
         bytes32 digest = hashReport(snapshotTime, reportHash);
         address[] memory signers = _checkQuorum(digest, signatures);
         lastReportTime = snapshotTime;
@@ -303,7 +299,7 @@ contract EpochManager is EIP712 {
     function basketStale() external view returns (bool) {
         if (_active.epoch == 0) return false;
         uint256 last = _active.activatedAt > lastReportTime ? _active.activatedAt : lastReportTime;
-        return block.timestamp > last + registry.param(Param.StaleBasketAfter);
+        return block.timestamp > last + _param(Param.StaleBasketAfter);
     }
 
     // ---------------------------------------------------------------- internals
@@ -318,7 +314,7 @@ contract EpochManager is EIP712 {
         if (p.expiry <= readyAt) revert ExpiryTooSoon();
         if (p.expiry > block.timestamp + MAX_VALIDITY) revert ExpiryTooFar();
         if (p.snapshotTime > block.timestamp) revert SnapshotInFuture();
-        if (block.timestamp - p.snapshotTime > registry.param(Param.MaxSnapshotAge)) revert StaleSnapshot();
+        if (block.timestamp - p.snapshotTime > _param(Param.MaxSnapshotAge)) revert StaleSnapshot();
         if (p.snapshotTime <= _active.snapshotTime) revert SnapshotNotNewer();
     }
 
@@ -329,9 +325,9 @@ contract EpochManager is EIP712 {
                 || p.liquidityUsd.length != n || p.volumesUsd.length != n || p.dataHash == bytes32(0)
         ) revert Malformed();
 
-        uint256 minCap = registry.param(Param.MinMarketCapUsd);
-        uint256 minLiquidity = registry.param(Param.MinLiquidityUsd);
-        uint256 minVolume = registry.param(Param.MinVolumeUsd);
+        uint256 minCap = _param(Param.MinMarketCapUsd);
+        uint256 minLiquidity = _param(Param.MinLiquidityUsd);
+        uint256 minVolume = _param(Param.MinVolumeUsd);
         uint256 total;
         uint256 additions;
         bool hadBasket = _active.tokens.length != 0;
@@ -340,10 +336,10 @@ contract EpochManager is EIP712 {
             for (uint256 j; j < i; ++j) {
                 if (p.tokens[j] == token) revert DuplicateToken(token);
             }
-            if (!registry.isEligible(token)) revert NotEligible(token);
+            if (!_isEligible(token)) revert NotEligible(token);
             uint256 weight = p.weightsBps[i];
             if (weight == 0) revert Malformed();
-            if (weight > registry.maxWeightBps(token)) revert OverWeight(token);
+            if (weight > _maxWeightBps(token)) revert OverWeight(token);
             total += weight;
             if (p.marketCapsUsd[i] < minCap || p.liquidityUsd[i] < minLiquidity || p.volumesUsd[i] < minVolume) {
                 revert BelowMinimums(token);
@@ -351,7 +347,7 @@ contract EpochManager is EIP712 {
             if (hadBasket && !_isActiveMember(token)) ++additions;
         }
         if (total > BPS) revert TotalWeightTooHigh();
-        if (additions > registry.param(Param.MaxAdditionsPerEpoch)) revert TooManyAdditions();
+        if (additions > _param(Param.MaxAdditionsPerEpoch)) revert TooManyAdditions();
     }
 
     function _isActiveMember(address token) private view returns (bool) {
@@ -378,5 +374,31 @@ contract EpochManager is EIP712 {
             signers[i] = signer;
             last = signer;
         }
+    }
+
+    /// @dev Share the external-call encoding/validation across parameter reads to reduce launch code size.
+    function _param(Param parameter) private view returns (uint256) {
+        return registry.param(parameter);
+    }
+
+    // Shared typed reads keep every external-call and ABI check while reducing deployment bytecode.
+    function _methodologyVersion() private view returns (uint32) {
+        return registry.methodologyVersion();
+    }
+
+    function _signerSetVersion() private view returns (uint32) {
+        return admin.signerSetVersion();
+    }
+
+    function _isEligible(address token) private view returns (bool) {
+        return registry.isEligible(token);
+    }
+
+    function _maxWeightBps(address token) private view returns (uint16) {
+        return registry.maxWeightBps(token);
+    }
+
+    function _paused() private view returns (bool) {
+        return admin.paused();
     }
 }

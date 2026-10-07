@@ -110,6 +110,22 @@ contract DeploymentTest is Fixture {
         new FeeHookDeployer(MAINNET_POOL_MANAGER, address(0), address(usdc), address(waterfall));
     }
 
+    function test_nativeQuoteStillRequiresMatchingWrappedReserve() public {
+        // This waterfall holds USDC and does not wrap native fees.
+        vm.expectRevert(FeeHookDeployer.IncompatibleQuote.selector);
+        new FeeHookDeployer(MAINNET_POOL_MANAGER, address(imdex), address(0), address(waterfall));
+        FeeWaterfall wrongWeth = new FeeWaterfall(address(tl), address(vault), address(epochs), address(0xBAD));
+        vm.expectRevert(FeeHookDeployer.IncompatibleQuote.selector);
+        new FeeHookDeployer(MAINNET_POOL_MANAGER, address(imdex), address(0), address(wrongWeth));
+    }
+
+    function test_missingWaterfallAndIdenticalCurrenciesStillFailClosed() public {
+        vm.expectRevert(); // Missing getter return data cannot be decoded as a reserve asset.
+        new FeeHookDeployer(MAINNET_POOL_MANAGER, address(imdex), address(usdc), address(0xBAD));
+        vm.expectRevert(FeeHookDeployer.IncompatibleQuote.selector);
+        new FeeHookDeployer(MAINNET_POOL_MANAGER, address(usdc), address(usdc), address(waterfall));
+    }
+
     function test_runtimeFitsEip170AndContainsNoDelegatecallCallcodeOrSelfdestruct() public {
         (Deploy.Deployment memory d,) = _launch();
         address[8] memory deployed = [

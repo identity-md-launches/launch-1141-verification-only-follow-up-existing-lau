@@ -35,8 +35,10 @@ contract IndexVault is ERC20 {
     ITimelockedAdmin public immutable admin;
     IAssetRegistry public immutable registry;
     /// @notice The reserve asset deposits are made in (USDC or WETH).
-    address public immutable asset;
-    uint8 private immutable _shareDecimals;
+    /// @dev Constructor-only; no setter exists. Storage reduces atomic deployment gas.
+    address public asset;
+    // Constructor-only and packed with asset, avoiding another storage slot.
+    uint8 private _shareDecimals;
 
     /// @notice Maximum NAV, in reserve units, that deposits may bring the vault to.
     uint256 public depositCap;
@@ -77,14 +79,13 @@ contract IndexVault is ERC20 {
     error SharesLocked();
 
     modifier nonReentrant() {
-        if (_lock != IDLE) revert Locked();
-        _lock = ENTERED;
+        _enter();
         _;
         _lock = IDLE;
     }
 
     modifier onlyExecutor() {
-        if (msg.sender != admin.executor()) revert NotExecutor();
+        _requireExecutor();
         _;
     }
 
@@ -118,8 +119,8 @@ contract IndexVault is ERC20 {
         nonReentrant
         returns (uint256 shares)
     {
-        if (admin.paused()) revert Paused();
-        if (admin.guardian() == address(0)) revert NoGuardian();
+        if (_paused()) revert Paused();
+        if (_guardian() == address(0)) revert NoGuardian();
         if (receiver == address(0)) revert ZeroAddress();
         if (assets == 0) revert ZeroAmount();
         if (!_assetChecked) {
@@ -133,13 +134,13 @@ contract IndexVault is ERC20 {
         (uint256 navBefore, address unpriced) = _nav();
         if (unpriced != address(0)) revert PriceUnavailable(unpriced);
 
-        uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
+        uint256 balanceBefore = _tokenBalance(asset);
         IERC20(asset).safeTransferFrom(msg.sender, address(this), assets);
-        uint256 received = IERC20(asset).balanceOf(address(this)) - balanceBefore;
+        uint256 received = _tokenBalance(asset) - balanceBefore;
         if (navBefore + received > depositCap) revert DepositCapExceeded();
 
         // The fee stays in the vault, so it accrues to existing holders.
-        uint256 fee = received * registry.param(Param.DepositFeeBps) / BPS;
+        uint256 fee = received * _param(Param.DepositFeeBps) / BPS;
         shares = Math.mulDiv(received - fee, totalSupply() + VIRTUAL_SHARES, navBefore + 1);
         if (shares == 0 || shares < minShares) revert InsufficientShares(shares, minShares);
         _mint(receiver, shares);
@@ -162,7 +163,7 @@ contract IndexVault is ERC20 {
         _burn(msg.sender, shares);
         emit Redeemed(msg.sender, receiver, shares);
 
-        uint256 amount = Math.mulDiv(IERC20(asset).balanceOf(address(this)), shares, supply);
+        uint256 amount = Math.mulDiv(_tokenBalance(asset), shares, supply);
         if (amount != 0) {
             IERC20(asset).safeTransfer(receiver, amount);
             emit RedemptionPayout(receiver, asset, amount);
@@ -224,16 +225,16 @@ contract IndexVault is ERC20 {
     // ---------------------------------------------------------------- timelock only
 
     function setDepositCap(uint256 cap) external {
-        if (msg.sender != address(admin)) revert NotTimelock();
+        _requireTimelock();
         depositCap = cap;
         emit DepositCapSet(cap);
     }
 
     /// @notice Recovers a token sent here by mistake. It cannot touch the reserve or any held token.
     function rescue(address token, address to) external nonReentrant {
-        if (msg.sender != address(admin)) revert NotTimelock();
+        _requireTimelock();
         if (token == asset || isHeld(token) || to == address(0)) revert NotRescuable();
-        uint256 amount = IERC20(token).balanceOf(address(this));
+        uint256 amount = _tokenBalance(token);
         IERC20(token).safeTransfer(to, amount);
         emit Rescued(token, to, amount);
     }
@@ -255,7 +256,7 @@ contract IndexVault is ERC20 {
     /// @notice Net asset value in reserve units. `complete` is false for a nonempty held position
     /// that is confirmed-quarantined, unreadable or unpriced. Its value is omitted and deposits close.
     function nav() external view returns (uint256 value, bool complete) {
-        if (_lock == TRADING) revert Locked();
+        _requireNotTrading();
         address unpriced;
         (value, unpriced) = _nav();
         complete = unpriced == address(0);
@@ -263,7 +264,7 @@ contract IndexVault is ERC20 {
 
     /// @notice NAV per whole share, in reserve units.
     function navPerShare() external view returns (uint256 value, bool complete) {
-        if (_lock == TRADING) revert Locked();
+        _requireNotTrading();
         (uint256 total, address unpriced) = _nav();
         value = Math.mulDiv(total + 1, 10 ** _shareDecimals, totalSupply() + VIRTUAL_SHARES);
         complete = unpriced == address(0);
@@ -285,35 +286,34 @@ contract IndexVault is ERC20 {
         values = new uint256[](n + 1);
         priced = new bool[](n + 1);
         tokens[0] = asset;
-        balances[0] = IERC20(asset).balanceOf(address(this));
+        balances[0] = _tokenBalance(asset);
         values[0] = balances[0];
         priced[0] = true;
         for (uint256 i; i < n; ++i) {
             tokens[i + 1] = _held[i];
             bool readable;
             (balances[i + 1], readable) = _balanceOf(_held[i]);
-            (values[i + 1], priced[i + 1]) = registry.convert(_held[i], balances[i + 1], asset);
+            (values[i + 1], priced[i + 1]) = _registryConvert(_held[i], balances[i + 1], asset);
             priced[i + 1] = priced[i + 1] && readable;
         }
     }
 
     function previewDeposit(uint256 assets) external view returns (uint256 shares, bool available) {
-        if (_lock == TRADING) revert Locked();
+        _requireNotTrading();
         (uint256 total, address unpriced) = _nav();
-        uint256 fee = assets * registry.param(Param.DepositFeeBps) / BPS;
+        uint256 fee = assets * _param(Param.DepositFeeBps) / BPS;
         shares = Math.mulDiv(assets - fee, totalSupply() + VIRTUAL_SHARES, total + 1);
-        available =
-            unpriced == address(0) && !admin.paused() && admin.guardian() != address(0) && total + assets <= depositCap;
+        available = unpriced == address(0) && !_paused() && _guardian() != address(0) && total + assets <= depositCap;
     }
 
     function previewRedeem(uint256 shares) external view returns (address[] memory tokens, uint256[] memory amounts) {
-        if (_lock == TRADING) revert Locked();
+        _requireNotTrading();
         uint256 n = _held.length;
         uint256 supply = totalSupply() + VIRTUAL_SHARES;
         tokens = new address[](n + 1);
         amounts = new uint256[](n + 1);
         tokens[0] = asset;
-        amounts[0] = Math.mulDiv(IERC20(asset).balanceOf(address(this)), shares, supply);
+        amounts[0] = Math.mulDiv(_tokenBalance(asset), shares, supply);
         for (uint256 i; i < n; ++i) {
             tokens[i + 1] = _held[i];
             (uint256 balance,) = _balanceOf(_held[i]);
@@ -334,7 +334,7 @@ contract IndexVault is ERC20 {
     /// @return value NAV counting unpriced tokens as zero.
     /// @return unpriced The first held token with a non-zero balance and no fresh price, if any.
     function _nav() private view returns (uint256 value, address unpriced) {
-        value = IERC20(asset).balanceOf(address(this));
+        value = _tokenBalance(asset);
         uint256 n = _held.length;
         for (uint256 i; i < n; ++i) {
             address token = _held[i];
@@ -345,7 +345,7 @@ contract IndexVault is ERC20 {
                 continue;
             }
             uint256 tokenValue;
-            if (ok) (tokenValue, ok) = registry.convert(token, balance, asset);
+            if (ok) (tokenValue, ok) = _registryConvert(token, balance, asset);
             if (ok) value += tokenValue;
             else if (unpriced == address(0)) unpriced = token;
         }
@@ -364,5 +364,44 @@ contract IndexVault is ERC20 {
         if (!ok || token.code.length == 0) return false;
         if (ret.length == 0) return true;
         return ret.length >= 32 && abi.decode(ret, (uint256)) == 1;
+    }
+
+    /// @dev Share the external-call encoding/validation across parameter reads to reduce launch code size.
+    function _param(Param parameter) private view returns (uint256) {
+        return registry.param(parameter);
+    }
+
+    // Shared typed reads keep every external-call and ABI check while reducing deployment bytecode.
+    function _paused() private view returns (bool) {
+        return admin.paused();
+    }
+
+    function _guardian() private view returns (address) {
+        return admin.guardian();
+    }
+
+    function _registryConvert(address from, uint256 amount, address to) private view returns (uint256, bool) {
+        return registry.convert(from, amount, to);
+    }
+
+    function _tokenBalance(address token) private view returns (uint256) {
+        return IERC20(token).balanceOf(address(this));
+    }
+
+    function _requireExecutor() private view {
+        if (msg.sender != admin.executor()) revert NotExecutor();
+    }
+
+    function _requireTimelock() private view {
+        if (msg.sender != address(admin)) revert NotTimelock();
+    }
+
+    function _requireNotTrading() private view {
+        if (_lock == TRADING) revert Locked();
+    }
+
+    function _enter() private {
+        if (_lock != IDLE) revert Locked();
+        _lock = ENTERED;
     }
 }

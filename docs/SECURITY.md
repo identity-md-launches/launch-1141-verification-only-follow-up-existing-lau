@@ -62,12 +62,16 @@ the admin wallet none.
 | Delta-only trading, buffer, drift threshold, window, slippage floor (fuzzed fills), failed execution and quarantine, timelock disposal, membership change, router allowlist, router reentrancy, executor replacement, fee-on-transfer | `test/RebalanceExecutor.t.sol` |
 | Split, rounding, conservation fuzz, claims, vault push, bounds, surcharge, rescue | `test/FeeWaterfall.t.sol` |
 | Hook in the real v4 `PoolManager`: permission bits, pool restriction, callback access, all four swap shapes, LP fee override, events, fee fuzz, end-to-end fee flow; native ETH and ERC-20 quote as currency0 and currency1 | `test/FeeHook.t.sol` |
-| Launch floor: no external calls in constructors, no roles at launch, supply untouched, EIP-170, no DELEGATECALL/CALLCODE/SELFDESTRUCT | `test/Deployment.t.sol` |
+| Launch floor: constructors call only earlier application contracts, no roles at launch, supply untouched, EIP-170, no DELEGATECALL/CALLCODE/SELFDESTRUCT | `test/Deployment.t.sol` |
+| Launch 816: native ETH/WETH arguments, CREATE2 references, gas-budget failure and repair, atomic rollback, no role grants | `test/Launch816.t.sol` |
+| Optional pinned mainnet fork: actual launch factory, original failure, repaired seven-app deployment, distribution, launch pool and receipt recording within the transaction gas cap | `test/fork/Launch816Fork.t.sol` |
+| Hook deployment: immutable code hashes and constructor arguments, tampered-code rejection, salt bits, collision and second-deployment rejection | `test/FeeHook.t.sol` |
 | Revision regressions: guardian recovery, stale activation, share lock bypasses, failed balances, gas griefing, quarantine authority, windows, dust, donations, configuration and treasury push access | `test/Revision.t.sol` |
 | Invariants under random deposits, redemptions, price moves, fills and fee flows: fee conservation, executor holds nothing, shares fully backed, NAV per share never lowered by deposits, redemptions or fee deposits, no fill accepted below the floor | `test/invariant/` |
 
-Not covered, and stated as such: mainnet-fork tests against real tokens, feeds, routers and the
-deployed `PoolManager`; behaviour with live non-standard tokens (USDT-style approvals are handled by
+Not covered, and stated as such: complete epoch/trading mainnet-fork tests against real tokens,
+feeds and routers (the launch-only fork is documented in `docs/LAUNCH-816.md`); behaviour with live
+non-standard tokens (USDT-style approvals are handled by
 `forceApprove` but untested against the real token); long fuzz campaigns; static analysis (Slither,
 Mythril were not run); gas griefing by a keeper underfunding a trade (it reverts or counts as a
 failure); live-market economic simulation of oracle-latency arbitrage across blocks.
@@ -93,3 +97,9 @@ remainder of a zero-target position whose value rounds below one reserve unit.
 
 This repository holds no keys and broadcasts nothing; deployment and role assignment belong to the
 network's deployer and the admin wallet.
+
+The launch 816 repair authenticates caller-supplied hook creation code with an immutable hash
+computed from `type(FeeHook).creationCode` during construction. The hook's constructor arguments
+are appended by the deployer from its immutable fields. No owner, setter, initializer or alternate
+implementation path is added. CREATE2 failure leaves `hook` unset. The raw code concatenation uses
+`bytes.concat`; CREATE2 address derivation uses packed encoding only for fixed-width values.

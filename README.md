@@ -54,8 +54,9 @@ by `FeeHookDeployer` after launch.
   on the result. An MEV-resistant route is used by submitting through a private relay or by
   allowlisting a batch-auction settlement adapter. A CoW adapter (presigned orders with escrow
   accounted in NAV) is milestone M5 in `docs/PROPOSAL.md`.
-- **Mainnet-fork tests are not in this repository.** The verifier runs with no network. They are a
-  required step before real funds (`docs/SECURITY.md`).
+- **The optional mainnet fork covers launch deployment.** The verifier runs with no network, using
+  the offline regression suite. Fork coverage of live tokens, feeds, routers and complete epochs
+  remains required before real funds (`docs/SECURITY.md`).
 
 ## Roles
 
@@ -111,6 +112,11 @@ ETH with `weth == reserveAsset`.
 `script/Deploy.s.sol` deploys the same seven contracts with the same arguments for local, fork and
 testnet rehearsals. `deploy(Config)` is what the tests call; `run()` only reads the environment.
 
+Launch 816's repair keeps these constructor arguments and all validation intact. The hook deployer
+stores immutable creation-code and init-code hashes instead of embedding the hook in its runtime,
+reducing the atomic launch's code-deposit gas. See [the deployment diagnosis](docs/LAUNCH-816.md)
+for the reproduction, gas budget and release responsibilities.
+
 ## After launch (operational responsibilities)
 
 Every step below is a timelock operation scheduled by the admin wallet and executed after `minDelay`,
@@ -130,8 +136,12 @@ unless marked otherwise.
 9. `FeeWaterfall.setRecipient(bucket, address)` for the swarm, protocol and utility buckets. Until set,
    those buckets simply accrue.
 10. Anyone: find a salt with `FeeHookDeployer.findSalt(start, iterations)` (an `eth_call`), then
-    `FeeHookDeployer.deploy(salt)`, then `PoolManager.initialize(FeeHookDeployer.poolKey(), sqrtPriceX96)`
-    and add liquidity.
+    `FeeHookDeployer.deploy(salt, creationCode)`, then
+    `PoolManager.initialize(FeeHookDeployer.poolKey(), sqrtPriceX96)` and add liquidity. Supply the
+    exact `FeeHook` creation bytecode from the accepted build, without constructor arguments
+    (`forge inspect src/FeeHook.sol:FeeHook bytecode`). Its hash must match `creationCodeHash()`;
+    the deployer appends its four immutable arguments. Changed, empty or argument-suffixed code
+    is rejected. There is no caller-selected implementation or configuration.
 
 Ongoing: the swarm publishes a signed proposal when the basket should change and anchors a report hash
 daily; a keeper activates and trades within the weekly window, submitting through a private relay; the
@@ -260,15 +270,17 @@ forge fmt --check
 ```
 
 Compiler `0.8.26`, EVM `cancun`, optimizer on, `bytecode_hash = "none"`, no `ffi`, no filesystem access.
-215 tests: unit tests with success and failure cases for every contract, fuzz tests, hook tests inside
+Unit tests with success and failure cases for every contract, launch gas regressions, fuzz tests, hook tests inside
 the real Uniswap v4 `PoolManager` (native ETH and ERC-20 quote on either side of the pair), and
 invariant tests for solvency and fee accounting. Tests read no environment variables.
 
-Ran for this delivery: `forge build`, `forge test`, `forge fmt --check`. Not run: Slither, Mythril,
-mainnet-fork tests, long fuzz campaigns. Passing tests are not an audit.
+Ran for this delivery: `forge build`, `forge test`, `forge fmt --check`, and the optional launch 816
+factory fork at block 26,137,298 (see `docs/LAUNCH-816.md`). Not run: Slither, Mythril, full economic
+fork coverage or long fuzz campaigns. Passing tests are not an audit.
 
 ## Documents
 
+- `docs/LAUNCH-816.md` — deployment failure diagnosis, gas measurements, reproduction and release parameters.
 - `docs/METHODOLOGY.md` — eligibility, ranking formula, weights, buffers, stale-data rules, proposal and report formats, swarm workflow.
 - `docs/SECURITY.md` — trust model, what each test suite covers, known limitations, requirements before real funds.
 - `docs/PROPOSAL.md` — milestones, audit scope, gas assumptions, timeline, ownership, handoff, support.

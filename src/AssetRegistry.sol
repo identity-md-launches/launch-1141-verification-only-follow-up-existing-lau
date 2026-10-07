@@ -77,7 +77,7 @@ contract AssetRegistry {
     error AlreadyQuarantined();
 
     modifier onlyAdmin() {
-        if (msg.sender != address(admin)) revert NotTimelock();
+        _requireAdmin();
         _;
     }
 
@@ -332,5 +332,9 @@ contract AssetRegistry {
         if (answeredInRound < roundId) return (0, false);
         price = uint256(answer) * 1e18 / 10 ** feedDecimals;
         ok = price != 0;
+    }
+
+    function _requireAdmin() private view {
+        if (msg.sender != address(admin)) revert NotTimelock();
     }
 }

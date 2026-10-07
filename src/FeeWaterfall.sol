@@ -73,13 +73,12 @@ contract FeeWaterfall {
     error NotAuthorized();
 
     modifier onlyAdmin() {
-        if (msg.sender != address(admin)) revert NotTimelock();
+        _requireAdmin();
         _;
     }
 
     modifier nonReentrant() {
-        if (_lock != 1) revert Reentrancy();
-        _lock = 2;
+        _enter();
         _;
         _lock = 1;
     }
@@ -172,7 +171,7 @@ contract FeeWaterfall {
             if (!ok) revert EthTransferFailed();
         } else {
             if (token == reserveAsset) revert NotRescuable();
-            amount = IERC20(token).balanceOf(address(this));
+            amount = _tokenBalance(token);
             IERC20(token).safeTransfer(to, amount);
         }
         emit Rescued(token, to, amount);
@@ -199,7 +198,7 @@ contract FeeWaterfall {
 
     /// @notice Reserve-asset fees (and wrappable ETH) received but not yet split.
     function pendingDistribution() external view returns (uint256) {
-        uint256 balance = IERC20(reserveAsset).balanceOf(address(this));
+        uint256 balance = _tokenBalance(reserveAsset);
         if (_wrapsNative()) balance += address(this).balance;
         return balance - totalAccrued;
     }
@@ -212,7 +211,7 @@ contract FeeWaterfall {
 
     function _distribute() private returns (uint256 amount) {
         if (_wrapsNative() && address(this).balance != 0) IWETH(weth).deposit{value: address(this).balance}();
-        amount = IERC20(reserveAsset).balanceOf(address(this)) - totalAccrued;
+        amount = _tokenBalance(reserveAsset) - totalAccrued;
         if (amount == 0) return 0;
 
         uint256 nonLp = BPS - lpBps;
@@ -238,5 +237,18 @@ contract FeeWaterfall {
     function _credit(Bucket bucket, uint256 amount) private {
         accrued[bucket] += amount;
         lifetime[bucket] += amount;
+    }
+
+    function _tokenBalance(address token) private view returns (uint256) {
+        return IERC20(token).balanceOf(address(this));
+    }
+
+    function _requireAdmin() private view {
+        if (msg.sender != address(admin)) revert NotTimelock();
+    }
+
+    function _enter() private {
+        if (_lock != 1) revert Reentrancy();
+        _lock = 2;
     }
 }

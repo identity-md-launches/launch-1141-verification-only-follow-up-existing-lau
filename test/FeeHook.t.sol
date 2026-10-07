@@ -60,7 +60,7 @@ abstract contract FeeHookBase is Fixture {
 
         (bytes32 salt, bool found) = hookDeployer.findSalt(0, 400_000);
         assertTrue(found, "no salt found");
-        hook = FeeHook(hookDeployer.deploy(salt));
+        hook = FeeHook(hookDeployer.deploy(salt, type(FeeHook).creationCode));
         key = hook.poolKey();
         manager.initialize(key, SQRT_PRICE_1_1);
 
@@ -173,6 +173,7 @@ abstract contract FeeHookBase is Fixture {
         assertEq(hook.quoteCurrency(), quote);
         assertEq(address(hook.waterfall()), address(waterfall));
         assertEq(address(hookDeployer.poolKey().hooks), address(hook));
+        assertEq(keccak256(abi.encode(hookDeployer.poolKey())), keccak256(abi.encode(hook.poolKey())));
     }
 
     function test_deployerRejectsWrongSaltAndSecondDeployment() public {
@@ -182,15 +183,62 @@ abstract contract FeeHookBase is Fixture {
         assertEq(uint160(fresh.computeAddress(salt)) & 0x3FFF, 0x20CC);
 
         bytes32 bad = bytes32(uint256(salt) + 1);
-        if (uint160(fresh.computeAddress(bad)) & 0x3FFF != 0x20CC) {
-            vm.expectRevert(); // the hook's constructor refuses an address without the bits
-            fresh.deploy(bad);
-        }
+        while (uint160(fresh.computeAddress(bad)) & 0x3FFF == 0x20CC) bad = bytes32(uint256(bad) + 1);
+        vm.expectRevert(FeeHookDeployer.HookDeploymentFailed.selector);
+        fresh.deploy(bad, type(FeeHook).creationCode);
+        assertEq(fresh.hook(), address(0));
+        assertEq(fresh.computeAddress(bad).code.length, 0);
         vm.prank(BOB); // permissionless: the salt only selects the address
-        address deployed = fresh.deploy(salt);
+        address deployed = fresh.deploy(salt, type(FeeHook).creationCode);
         assertEq(deployed, fresh.computeAddress(salt));
         vm.expectRevert(FeeHookDeployer.AlreadyDeployed.selector);
-        fresh.deploy(salt);
+        fresh.deploy(salt, type(FeeHook).creationCode);
+    }
+
+    function test_deployerAuthenticatesCodeAndAppendsOnlyItsFixedArguments() public {
+        FeeHookDeployer fresh = new FeeHookDeployer(address(manager), address(imdex), quote, address(waterfall));
+        vm.expectRevert(FeeHookDeployer.HookNotDeployed.selector);
+        fresh.poolKey();
+        bytes memory code = type(FeeHook).creationCode;
+        assertEq(fresh.creationCodeHash(), keccak256(code));
+        assertEq(
+            fresh.initCodeHash(),
+            keccak256(bytes.concat(code, abi.encode(address(manager), address(imdex), quote, address(waterfall))))
+        );
+        (bytes32 salt, bool found) = fresh.findSalt(0, 400_000);
+        assertTrue(found);
+
+        vm.expectRevert(FeeHookDeployer.InvalidCreationCode.selector);
+        fresh.deploy(salt, "");
+        vm.expectRevert(FeeHookDeployer.InvalidCreationCode.selector);
+        fresh.deploy(salt, bytes.concat(code, abi.encode(address(manager), address(imdex), quote, BOB)));
+        bytes memory changed = bytes.concat(code);
+        changed[changed.length - 1] = bytes1(uint8(changed[changed.length - 1]) ^ 1);
+        vm.expectRevert(FeeHookDeployer.InvalidCreationCode.selector);
+        fresh.deploy(salt, changed);
+        vm.expectRevert(FeeHookDeployer.InvalidCreationCode.selector);
+        fresh.deploy(salt, hex"60006000f3");
+        assertEq(fresh.hook(), address(0));
+        assertEq(fresh.computeAddress(salt).code.length, 0);
+
+        vm.prank(BOB);
+        FeeHook deployed = FeeHook(fresh.deploy(salt, code));
+        assertEq(address(deployed), fresh.computeAddress(salt));
+        assertEq(address(deployed.poolManager()), address(manager));
+        assertEq(deployed.projectToken(), address(imdex));
+        assertEq(deployed.quoteCurrency(), quote);
+        assertEq(address(deployed.waterfall()), address(waterfall));
+    }
+
+    function test_create2CollisionCannotMarkHookAsDeployed() public {
+        FeeHookDeployer fresh = new FeeHookDeployer(address(manager), address(imdex), quote, address(waterfall));
+        (bytes32 salt, bool found) = fresh.findSalt(0, 400_000);
+        assertTrue(found);
+        address predicted = fresh.computeAddress(salt);
+        vm.etch(predicted, hex"00");
+        vm.expectRevert(FeeHookDeployer.HookDeploymentFailed.selector);
+        fresh.deploy{gas: 2_000_000}(salt, type(FeeHook).creationCode);
+        assertEq(fresh.hook(), address(0));
     }
 
     function test_deployerRejectsAQuoteTheWaterfallCannotAccountFor() public {

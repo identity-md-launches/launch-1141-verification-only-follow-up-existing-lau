@@ -100,6 +100,57 @@ contract EpochManagerTest is Fixture {
         assertEq(epochs.targetWeightBps(address(tokens[1])), 1500);
     }
 
+    function test_replacingLargeBasketTruncatesArraysAndClearsEveryPendingField() public {
+        (address[] memory members, uint16[] memory weights) = _topFive();
+        _activateBasket(members, weights);
+        _skip(7 days);
+        members = new address[](1);
+        weights = new uint16[](1);
+        members[0] = address(tokens[2]);
+        weights[0] = 1700;
+        EpochManager.Proposal memory p = _proposal(members, weights);
+        bytes32 hash = _publish(p);
+        EpochManager.Pending memory pending = epochs.pendingProposal();
+        assertEq(pending.epoch, p.epoch);
+        assertEq(pending.snapshotTime, p.snapshotTime);
+        assertEq(pending.expiry, p.expiry);
+        assertEq(pending.methodologyVersion, p.methodologyVersion);
+        assertEq(pending.signerSetVersion, p.signerSetVersion);
+        assertEq(pending.dataHash, p.dataHash);
+        assertEq(pending.tokens.length, 1);
+        assertEq(pending.weightsBps.length, 1);
+        assertEq(pending.tokens[0], members[0]);
+        assertEq(pending.weightsBps[0], weights[0]);
+        vm.expectRevert(EpochManager.NotReady.selector);
+        epochs.activate();
+        assertEq(epochs.activeBasket().tokens.length, 5);
+        assertEq(epochs.pendingProposal().proposalHash, hash);
+        _skip(6 hours);
+        epochs.activate();
+        EpochManager.Basket memory basket = epochs.activeBasket();
+        assertEq(basket.epoch, 2);
+        assertEq(basket.snapshotTime, p.snapshotTime);
+        assertEq(basket.activatedAt, block.timestamp);
+        assertEq(basket.dataHash, p.dataHash);
+        assertEq(basket.proposalHash, hash);
+        assertEq(basket.tokens.length, 1);
+        assertEq(basket.weightsBps.length, 1);
+        assertEq(basket.tokens[0], members[0]);
+        assertEq(basket.weightsBps[0], 1700);
+        assertEq(epochs.targetWeightBps(address(tokens[4])), 0);
+        pending = epochs.pendingProposal();
+        assertEq(pending.epoch, 0);
+        assertEq(pending.snapshotTime, 0);
+        assertEq(pending.readyAt, 0);
+        assertEq(pending.expiry, 0);
+        assertEq(pending.methodologyVersion, 0);
+        assertEq(pending.signerSetVersion, 0);
+        assertEq(pending.proposalHash, bytes32(0));
+        assertEq(pending.dataHash, bytes32(0));
+        assertEq(pending.tokens.length, 0);
+        assertEq(pending.weightsBps.length, 0);
+    }
+
     // ---------------------------------------------------------------- timing
 
     function test_rejectsExpiredProposal() public {

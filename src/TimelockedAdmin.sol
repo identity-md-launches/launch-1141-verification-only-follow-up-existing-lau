@@ -71,18 +71,18 @@ contract TimelockedAdmin {
     error RecoveryCannotBeVetoed();
 
     modifier onlyAdminWallet() {
-        if (msg.sender != admin) revert NotAdmin();
+        _requireAdminWallet();
         _;
     }
 
     /// @dev Reached only through `execute`, that is, after the delay.
     modifier onlySelf() {
-        if (msg.sender != address(this)) revert NotTimelock();
+        _requireSelf();
         _;
     }
 
     modifier onlyGuardian() {
-        if (msg.sender != guardian) revert NotGuardian();
+        _requireGuardian();
         _;
     }
 
@@ -267,5 +267,17 @@ contract TimelockedAdmin {
         if (roleOf[account] != role) revert RoleNotHeld();
         delete roleOf[account];
         emit RoleRevoked(account, role, msg.sender);
+    }
+
+    function _requireAdminWallet() private view {
+        if (msg.sender != admin) revert NotAdmin();
+    }
+
+    function _requireSelf() private view {
+        if (msg.sender != address(this)) revert NotTimelock();
+    }
+
+    function _requireGuardian() private view {
+        if (msg.sender != guardian) revert NotGuardian();
     }
 }
