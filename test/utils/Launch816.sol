@@ -101,6 +101,12 @@ abstract contract Launch816Fixture is Test {
     address internal constant OWNER = address(0xA11CE);
     uint256 internal constant TX_GAS_CAP = 16_777_216;
 
+    /// @dev The `$owner` the manifest binds into TimelockedAdmin. Rehearsals use a synthetic wallet;
+    /// the production fixture overrides it with the launch record's requester.
+    function _owner() internal view virtual returns (address) {
+        return OWNER;
+    }
+
     /// @dev Resolves launch.json static arguments in dependency order before the factory call.
     function _payload(address factory, bool legacy)
         internal
@@ -143,7 +149,7 @@ abstract contract Launch816Fixture is Test {
             0,
             "TimelockedAdmin",
             legacy ? Launch816Original.creationCode(0) : type(TimelockedAdmin).creationCode,
-            abi.encode(OWNER, uint256(2 days))
+            abi.encode(_owner(), uint256(2 days))
         );
         address[] memory a = p.expectedContracts;
         _app(

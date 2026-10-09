@@ -1,57 +1,42 @@
 # Adaptation notes: launch 816 verification follow-up
 
 This assignment is verification-only for the existing launch 816 at commit
-`3a26e979a5198fa515ded5a32e28b6c34902001b`. No contract source, no launch parameter, no manifest
-value and no dependency was changed. The result is the GO / NO-GO report in
-`docs/VERIFICATION-816.md` (verdict: NO-GO on one unresolved item, the production-payload gas
-margin, which only the launch service can resolve) and the tests that pin what was verified.
+`3a26e979a5198fa515ded5a32e28b6c34902001b` (tree `b8800af7…`). No contract source, no launch
+parameter, no manifest value and no dependency was changed. The result is the GO / NO-GO report in
+`docs/VERIFICATION-816.md` (verdict: **GO**, production payload at 16,622,997 gas, margin 154,219)
+and the tests that pin what was verified.
 
-## Changes
+## Changes in this follow-up
 
 | File | Change | Why |
 | --- | --- | --- |
-| `docs/VERIFICATION-816.md` | New. The GO / NO-GO report: provenance, factory fork results, argument resolution, parameter preservation, consistency of manifest / commit / tree / attestation / bytecode, role check, gas budget, margin, sensitivity and unresolved risks. | Deliverable of the assignment (items 1–8 of the brief). |
-| `test/Launch816Record.t.sol` | New offline tests. Pins the seven original creation hashes and sizes to the values in the public launch record; pins the repaired creation hashes of the verified tree `b8800af7…`; checks manifest resolution to the predicted factory addresses and `FeeHookDeployer`'s resolved argument tail; applies the contracts-only protected floor's size and opcode scan to the repaired runtime after a harness launch. | Brief items 1, 3 and 5: makes the bytecode and address consistency reproducible offline, so a source or compiler drift fails here instead of at the launch service. |
-| `test/fork/Launch816Fork.t.sol` | One added fork-only test, `testFork_marginIsBelowOneAgentIdOrOneCalldataWord`, and an unconstrained-budget helper. Skipped offline like the rest of the suite. | Brief item 8 and audit finding 39c34447: records that the rehearsal margin (17,778 gas) is below one extra agent ID (23,203) or one extra receipt-URL word (22,767). |
-| `test/StaleFeedQuarantine.t.sol` | New offline tests reproducing audit finding 72f24c4d and asserting the configuration mitigation (heartbeat slack). | The finding reproduces; see below for why the fix is a configuration, not a source change. |
-| `README.md` | One line in the document index pointing at the report. | Discoverability only. |
+| `docs/VERIFICATION-816.md` | Rewritten. Manifest mode and `$token` / pool resolution; commit, tree, attestation and bytecode consistency; exact gas, cap and margin for the production payload; coverage of token, seven applications, distributor and pool; unresolved risks; the provenance of every payload field. | The deliverable. |
+| `test/utils/Launch816Production.sol` | New fixture: the production payload reconstructed from the launch service's public records and from decoded live factory transactions (requester, pool share, allocation root, lock and sweep delays, price, range, liquidity rule, six agent IDs, receipt words). `$owner` becomes the requester; `$token` stays derived from the token creation code. | The brief's "exact production payload". |
+| `test/utils/Launch816.sol` | One virtual `_owner()` hook; the rehearsal fixture still returns its synthetic owner. | Lets the production fixture bind the requester into `TimelockedAdmin` without copying the resolver. |
+| `test/fork/Launch816ProductionFork.t.sol` | New fork-only suite (skipped offline): production payload through the real factory under the cap; original bytecode with the same payload still `DeploymentFailed(6)`; worst-case receipt words and the twelve-agent rehearsal shape measured for comparison. | Brief items 3 and 4. |
+| `test/Launch816Production.t.sol` | New offline tests: the liquidity rule reproduces four live launches; the rounded "80%" is not the production share; production fields pinned; `$token` derived, not literal; both bytecode sets receive the production arguments; harness launch succeeds with the requester as admin and no role; wrong owner rejected at index 0; original bytecode fails at index 6; fields outside constructors do not move addresses. | Meaningful success and failure coverage that runs with no network. |
+| `test/Launch816Gas.t.sol` | The constant once labelled "service-recorded original" is relabelled as the repair job's offline replay figure, and the assertion that predicted a production overrun from it is replaced by the fork-measured production total. | The previous NO-GO was built on that mislabel. |
 
 Nothing under `src/`, `launch.json`, `foundry.toml`, `remappings.txt`, `lib/` or `script/` changed.
-Test count goes from 280 to 287 offline tests (plus 3 fork tests, skipped offline).
 
-## Audit findings
+## Why the verdict changed from NO-GO to GO
 
-- **39c34447 (medium): gas margin below one agent ID; production payload unverified.** Reproduces
-  exactly on the mainnet fork at block 26,137,298 (16,759,438 of 16,777,216; 13 agent IDs exceed
-  the cap by 5,425; one longer URL word by 4,989). Not fixable in this repository: the production
-  payload is held by the launch service and the public job record truncates the recorded
-  simulation call after its `kind` field. Recorded as the NO-GO item; the margin test is added to
-  the fork suite.
-- **72f24c4d (low): one-second heartbeat lapse enables a sticky permissionless quarantine.**
-  Reproduces (`test/StaleFeedQuarantine.t.sol`). Source is deliberately unchanged: this follow-up
-  verifies the attested tree, and a source change would move every creation hash and address that
-  items 1 and 5 bind to, invalidating the verification it delivers. The behaviour is also the
-  documented tighten-only design. The mitigation the finding itself proposes, approving feeds with
-  a heartbeat above the feed's nominal value, is a post-launch timelock configuration (README
-  operating steps 5 and 6), not a launch parameter, and the test asserts that it closes the window
-  while keeping genuinely stale feeds quarantinable. Listed as a residual risk in the report.
-- **844c6bee (info): manifest is `evm_project`, pinned check is the contracts-only floor.**
-  Confirmed and documented. `launch.json` is unchanged (the brief forbids changing launch
-  parameters); the contracts-only floor passes with manifest-resolved inputs, and the full
-  `evm_project` path is covered by the fork suite.
-- **33127cb2 (info): provenance.** Resolved by the repair job's work record: the accepted
-  submission's `verifiedTreeHash` is `b8800af76ee7df5b312018e26ee518f44636da27`, the tree of
-  `3a26e979` on `main`; `c6a77b2` is the worker's local commit of the same tree. No attestation
-  over the repaired tree exists yet; the report lists it as open for the launch service.
+The previous follow-up could not obtain the production payload and extrapolated from a figure it
+took for a service measurement. This follow-up recovered the payload from the service's own
+records: the launch detail API publishes the requester, `economics.poolBps`, the allocation root,
+the attestation and the allocation list; the factory's live transactions (launches 884, 944, 1029,
+1089, same operator and policy version) fix every remaining field's rule, each rule checked against
+the on-chain values. The real agent list has six IDs, not twelve, which is why the production call
+is cheaper than the rehearsal.
 
-## Launch rules checked against the unchanged code
+## Assumptions and operational responsibilities
 
-- Every application has a nonpayable constructor with static argument types, at most five
-  arguments, and no initializer, proxy, `DELEGATECALL`, `CALLCODE` or `SELFDESTRUCT`
-  (`test/Launch816Record.t.sol`, pinned protected floor).
-- `FeeHookDeployer`'s constructor calls `FeeWaterfall`, which is deployed earlier in the same
-  factory transaction; on the empty-chain protected floor this passes because the floor deploys in
-  manifest order, and on the fork because the real factory does. This is the existing accepted
-  design and was not changed.
-- Ownership is an explicit `$owner` argument to `TimelockedAdmin`; no role is granted at
-  construction and the factory holds none afterwards.
+- `$owner` resolves to the requester wallet, as the accepted proposal states; any other nonzero
+  wallet changes the gas total by at most the calldata zero-byte difference of twenty bytes.
+- The three receipt hash words for the repaired tree do not exist until the service attests it;
+  the worst case for them is measured and fits.
+- The launch service: attest `3a26e979` / `b8800af7…`, rebuild creation payloads in manifest
+  order, derive `$token` from the token bytes it deploys, and compare its final call with the
+  payload table in the report before sending. No deployment, broadcast or key use happened here.
+- After launch, governance configures roles, feeds (with heartbeat slack), allowlists and the hook
+  deployment through the timelock, as `README.md` and `docs/LAUNCH-816.md` describe.

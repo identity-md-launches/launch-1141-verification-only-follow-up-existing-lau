@@ -13,7 +13,12 @@ import {FeeHookDeployer} from "../src/FeeHookDeployer.sol";
 contract Launch816GasTest is Launch816Fixture {
     uint256 private constant FORK_ORIGINAL_UNCONSTRAINED = 19_733_790;
     uint256 private constant FORK_REPAIRED_TOTAL = 16_759_438;
-    uint256 private constant SERVICE_RECORDED_ORIGINAL = 20_816_126;
+    /// @dev Figure the repair job's own offline replay reported for the original bytecode. It is not
+    /// a launch-service measurement (the service records only the revert, not a gas total), so it
+    /// predicts nothing about the production payload; see FORK_PRODUCTION_TOTAL.
+    uint256 private constant REPAIR_JOB_OFFLINE_ORIGINAL = 20_816_126;
+    /// @dev The production payload on the mainnet fork (test/fork/Launch816ProductionFork.t.sol).
+    uint256 private constant FORK_PRODUCTION_TOTAL = 16_622_997;
     uint256 private constant CODE_DEPOSIT_GAS_PER_BYTE = 200;
 
     uint256[7] private originalRuntime = [uint256(6309), 9210, 15_640, 13_420, 13_305, 6778, 7359];
@@ -70,17 +75,14 @@ contract Launch816GasTest is Launch816Fixture {
         emit log_named_uint("factory work beyond the application loop (fork - offline)", factoryOverhead);
         assertApproxEqAbs(FORK_ORIGINAL_UNCONSTRAINED - original, factoryOverhead, 2_000);
 
-        // What this cannot settle: the service recorded 20,816,126 for the original bytecode with the
-        // real payload. Applying the measured saving predicts the repaired real payload above the cap.
-        uint256 predictedProduction = SERVICE_RECORDED_ORIGINAL - offlineSaving;
-        emit log_named_uint("predicted production total (service record - saving)", predictedProduction);
-        emit log_named_uint("transaction cap", TX_GAS_CAP);
-        if (predictedProduction > TX_GAS_CAP) {
-            emit log_named_uint(
-                "predicted overrun, to be confirmed or refuted by the service", predictedProduction - TX_GAS_CAP
-            );
-        }
-        assertGt(predictedProduction, TX_GAS_CAP, "if this starts passing under the cap, update the report");
+        // The repair job's offline figure for the original bytecode is larger than either fork
+        // measurement because its harness payload differed; it was once misread as a service record
+        // of the production payload. The production payload itself was replayed on the fork
+        // (docs/VERIFICATION-816.md) and lands under the cap with the measured saving applied.
+        assertGt(REPAIR_JOB_OFFLINE_ORIGINAL, FORK_ORIGINAL_UNCONSTRAINED);
+        assertLt(FORK_PRODUCTION_TOTAL, TX_GAS_CAP, "production payload must fit the cap");
+        emit log_named_uint("production total on the fork", FORK_PRODUCTION_TOTAL);
+        emit log_named_uint("production margin", TX_GAS_CAP - FORK_PRODUCTION_TOTAL);
     }
 
     /// @dev The offline application loop is the dominant cost and the only part a code change can

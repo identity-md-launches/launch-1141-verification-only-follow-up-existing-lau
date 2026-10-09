@@ -67,9 +67,9 @@ contract Launch816ForkTest is Launch816Fixture {
         assertEq(deployer.hook(), address(0));
     }
 
-    /// @dev Verification follow-up (docs/VERIFICATION-816.md): the rehearsal margin is smaller than
-    /// the cost of one agent ID or one extra calldata word in the receipt URL. The production
-    /// payload is not known to this repository, so the measured total is an estimate, not a bound.
+    /// @dev Sensitivity of the twelve-agent rehearsal payload: its margin is smaller than one agent
+    /// ID or one extra receipt-URL word. The production payload itself (six agent IDs) is measured
+    /// in Launch816ProductionFork.t.sol; these per-item costs are what its margin is quoted in.
     function testFork_marginIsBelowOneAgentIdOrOneCalldataWord() public {
         uint256 snap = vm.snapshotState();
         (ILaunch816Factory.Launch memory p,) = _rehearsal(false);

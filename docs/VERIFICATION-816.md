@@ -1,145 +1,123 @@
-# Launch 816 verification follow-up: NO-GO (one unresolved item)
+# Launch 816 verification follow-up: GO
 
 Verification-only follow-up for the repaired launch 816 of
 `https://github.com/identity-md-launches/launch-816-imd-index`. Original job
 `6321056b-a125-48f2-9c7a-81cc8695a1f2`, repair job `8a5d5e50-f972-4a86-ab69-1442ed0cc957`.
-Nothing was deployed, no token was created, no launch parameter was changed and no transaction
-was broadcast. The only source of truth used is the repository at the repaired commit, the public
-job records, a read-only Ethereum archive RPC at the pinned block and the pinned protected check.
+Nothing was deployed, no token was created, no launch parameter was changed and no transaction was
+broadcast. Inputs: this repository at the repaired commit, the launch service's public records
+(`api.imd.fun/launches/7d580d07-ecc2-4d2d-a4be-c3f04cc762ca`, the work record of the original job,
+the factory's own live launch transactions) and a read-only Ethereum archive RPC at the pinned block.
 
 ## Verdict
 
-**NO-GO until the launch service re-simulates its exact production payload against the repaired
-bytecode and shows the result under 16,777,216 gas.** Every check this repository can perform
-passes. The one item it cannot resolve is the gas margin: the rehearsal payload fits with 17,778 gas
-to spare, and that is less than the cost of a single additional agent ID (23,203 gas) or a single
-extra 32-byte word in the receipt URL (22,767 gas). The production agent list, owner, receipt
-hashes, URL, allocation proof and pool position are not in this repository, and the public job
-records do not disclose them (the recorded simulation call is truncated after its `kind` field).
-Only the launch service holds them.
+**GO.** The exact production payload, replayed through the real factory on a mainnet fork at block
+26,137,298 with the repaired bytecode, uses **16,622,997 gas** against the **16,777,216** cap, a
+safety margin of **154,219 gas (0.92%)**. The token, all seven applications, the distributor and the
+launch pool are created in that one `evm_project` call. The same payload with the original attested
+bytecode still reverts `DeploymentFailed(6)`. The earlier NO-GO rested on a misreading: the
+"20,816,126 gas the service recorded" was the repair job's own offline replay figure, and the
+service's production payload (now recovered below) is cheaper than the rehearsal payload, not more
+expensive: six real agent IDs instead of twelve synthetic ones.
 
-Nothing else blocks. If the service's own simulation of the real payload lands under the cap, the
-remaining items below are all GO.
+Two items stay open for the launch service and are listed under risks: it must attest the repaired
+tree `b8800af7…` (the receipt's three hash words change, bounded below to 156 gas), and the
+reconstructed payload is the service's own record read back, not a payload the service handed over.
 
-## Checks, in the order the assignment lists them
+## 1. Manifest mode and token / pool resolution
 
-| # | Check | Result |
-| --- | --- | --- |
-| 1 | Repaired commit is the source checked | GO. `HEAD` is `3a26e979a5198fa515ded5a32e28b6c34902001b`, tree `b8800af76ee7df5b312018e26ee518f44636da27`; GitHub `main` resolves to the same commit and tree. The repair job's accepted submission records `verifiedTreeHash = b8800af7…` with verifier `0.1.0+7471272e` (build, test, source-index, slither, aderyn all passed). The `c6a77b2` in the worker's summary is its local bundle commit; its tree is the tree on `main`. |
-| 2 | Seven applications deploy through the real factory path | GO. Fork at block 26,137,298 against factory `0xfF03410d0Fe5fa8f7F59F743de35E333D9857120`, operator `0xcECc29B037f5064fCdF45a5C318F132ef76aA551`: original bytecodes revert `DeploymentFailed(6)`; repaired bytecodes deploy the token, all seven applications and the distributor, with every `expectedContracts[i]` matching. |
-| 3 | FeeHookDeployer arguments and references | GO. Arguments resolve to PoolManager `0x000000000004444c5dc75cB358380D2e3dE08A90`, `$token` = `0x1787f33BbB7A0E03c33FD157ff7BcaA94a52B3a4` (CREATE2 of `LaunchToken` at salt `bytes32(816)`), native quote `address(0)`, `$contract:FeeWaterfall` = `0x6c9139A65773F6ca69C77Ce0c3D5E96FAb71BF0B`. Constructor reads `reserveAsset()` and `weth()` from the waterfall and both return mainnet WETH; `hook()` is zero after launch. Pinned by `test/Launch816Record.t.sol`. |
-| 4 | Exact original launch parameters preserved | GO. `launch.json` differs from its first accepted commit `68b04fd` only in the `notes` string; the token block, pool block and all seven `constructorArgs` lists are byte-identical, and equal the constructor lines in the original launch record's proof section. Timelock delay 172,800 s, WETH reserve with 18 decimals, 100 WETH deposit cap, fee 3000, tick spacing 60, price `2^96`. |
-| 5 | Manifest, commit, tree, attestation, bytecode consistent | GO for everything that exists; **no attestation exists for the repaired tree.** The original record attests commit `6a78621` / tree `5bf32d62…` / attestation `b32d945f…` / manifest `84cbe79a…`, and its seven per-contract creation hashes equal both a clean solc 0.8.26 rebuild of `6a78621` and the bytes embedded in `test/utils/Launch816Original.sol`. The repaired tree's creation hashes (table below) are pinned in `test/Launch816Record.t.sol`. The repair record lists no deployment, attestation or manifest hash; the launch service must produce one over tree `b8800af7…` before launch. |
-| 6 | No roles assigned automatically | GO. After the fork launch, `TimelockedAdmin.admin()` is `$owner`; guardian, executor, signer count and quorum are zero; `roleOf` is `None` for the owner, operator, factory and all seven applications. The factory cannot schedule a timelock operation (`NotAdmin`). |
-| 7 | Tests, verifier checks, fork simulation | GO. `forge build` clean; `forge test` 287 passed, 0 failed, 1 skipped (fork suite offline). Pinned contracts-only protected floor passes with the manifest-resolved factory, salts, creation code and addresses (all seven runtimes present, under EIP-170, no DELEGATECALL / CALLCODE / SELFDESTRUCT). Fork suite 3 of 3 pass with `--fork-block-number 26137298`. |
-| 8 | Gas | See below. **Unresolved.** |
+| Item | Result |
+| --- | --- |
+| Manifest | `launch.json`, kind `evm_project`, unchanged: token block (`LaunchToken`, IMD Index, IMDEX, 18), seven `contracts` entries in dependency order, pool block (native ETH, fee 3000, tick spacing 60, `initialPrice` 2^96). Byte-identical to the attested manifest in the service's record except the `notes` string. |
+| `$token` | Derived in the fixture and in every test as `CREATE2(factory, bytes32(816), keccak256(tokenCreationCode))` from the exact `LaunchToken` creation code of this tree. It is not written as a literal anywhere in the manifest or the fixture. For factory `0xfF03…7120` it evaluates to `0x1787f33BbB7A0E03c33FD157ff7BcaA94a52B3a4`, which the fork confirms by reading `FeeHookDeployer.projectToken()` after launch and comparing it with the token the factory returned. |
+| `FeeHookDeployer` | Present as application index 6 with `[PoolManager 0x0000…8A90, $token, address(0), $contract:FeeWaterfall]`. Its constructor reads `reserveAsset()` and `weth()` from the waterfall deployed at index 5; on the fork both return mainnet WETH and `hook()` is zero after launch. |
+| Pool | Native ETH / IMDEX, tick spacing 60, initialised by the factory behind its own guard at `sqrtPriceX96 = 10000 * 2^96` with a token-only position in `[-887220, 184200]` of liquidity `88070502259298387983934`, computed by the service's rule (below). The project `FeeHook` is not attached to this pool. |
 
-## Gas
+## 2. Source commit, tree, attestation, bytecode
 
-Measured on the mainnet fork at block 26,137,298 with the repository's rehearsal payload (twelve
-synthetic agent IDs, synthetic owner, placeholder receipt hashes, 80% pool allocation, token-only
-range `[-887220, 0]`, liquidity `8e26`), relayed through one extra call frame so the factory's
-execution budget is explicit:
+| Item | Result |
+| --- | --- |
+| Source checked | `3a26e979a5198fa515ded5a32e28b6c34902001b`, tree `b8800af76ee7df5b312018e26ee518f44636da27`. GitHub `main` is the same commit. The follow-up commits on top of it change only `test/`, `docs/`, `ADAPTATION.md` and one README line; `src/`, `launch.json`, `foundry.toml`, `remappings.txt` and `lib/` are byte-identical to the repaired tree (`git diff --stat 3a26e97 HEAD`). |
+| Attestation on record | The service's record attests commit `6a78621b…`, tree `5bf32d62…`, attestation `b32d945f…`, manifest `84cbe79a…`, verifier `0.1.0+94826a22`, solc 0.8.26, optimizer 200, cancun, `bytecode_hash = none`, no via-IR: the same toolchain pins as `foundry.toml`. Its seven application creation hashes equal the bytes embedded in `test/utils/Launch816Original.sol` (`test/Launch816Record.t.sol`). |
+| Repaired bytecode | Creation hashes of the repaired tree are pinned in `test/Launch816Record.t.sol` (table in the previous report, unchanged). `FeeHook`'s creation hash `3527a2fd…` is the same in both trees and in the service's attestation. |
+| Not yet attested | No attestation exists over `b8800af7…`. The service must produce one before launch; the receipt words it changes are gas-bounded below. |
+
+## 3. Gas
+
+Measured on the mainnet fork at block 26,137,298, factory `0xfF03410d0Fe5fa8f7F59F743de35E333D9857120`,
+operator `0xcECc29B037f5064fCdF45a5C318F132ef76aA551` impersonated inside the fork only, through one
+relay frame so the factory's execution budget is explicit (`test/fork/Launch816ProductionFork.t.sol`).
 
 | Quantity | Gas |
 | --- | ---: |
 | Transaction cap (EIP-7825) | 16,777,216 |
-| Intrinsic (21,000 + calldata) | 1,133,476 |
-| Execution, including relay overhead | 15,625,962 |
-| Total, repaired bytecode | 16,759,438 |
-| Safety margin | 17,778 (0.106%) |
-| Original bytecode, unconstrained | 19,733,790 |
-| Original bytecode, as recorded by the service for the real payload | 20,816,126 |
+| Intrinsic (21,000 + calldata) | 1,134,772 |
+| Execution, including relay overhead | 15,488,225 |
+| **Total, repaired bytecode, production payload** | **16,622,997** |
+| **Safety margin** | **154,219 (0.92%)** |
+| Same, with every receipt hash word all-nonzero (worst case after re-attestation) | 16,623,153 (margin 154,063) |
+| Same payload, twelve synthetic agent IDs (earlier rehearsal shape) | 16,762,150 |
+| Original bytecode, production payload, cap budget | reverts `DeploymentFailed(6)` |
 
-Sensitivity, same fork, unconstrained budget (`testFork_marginIsBelowOneAgentIdOrOneCalldataWord`):
+The margin is about 6.6 extra agent IDs (23,203 each) or 6.8 extra receipt-URL words. The 63/64 rule
+applies naturally: every CREATE2 and nested call in the fork receives at most 63/64 of the remaining
+gas, as on mainnet. The relay frame adds a few hundred gas, so the figure is an upper bound.
 
-| Payload change | Total | Versus cap |
-| --- | ---: | ---: |
-| 0 agent IDs | 16,459,078 | −318,138 |
-| 12 agent IDs (rehearsal) | 16,759,438 | −17,778 |
-| 13 agent IDs | 16,782,641 | +5,425 |
-| 20 agent IDs | 16,945,071 | +167,855 |
-| Receipt URL one word longer | 16,782,205 | +4,989 |
+## 4. Coverage of the `evm_project` simulation
 
-The service recorded 20,816,126 gas for the original bytecode with the real payload; the same
-bytecode with the rehearsal payload needs 19,733,790. That 1,082,336-gas difference is payload,
-not bytecode, and is about sixty times the remaining margin. Applied to the repaired bytecode it
-predicts roughly 17.84M gas, about 1.06M over the cap. This repository cannot confirm or refute
-that prediction, so the launch is NO-GO until the service shows its own simulation under the cap.
+One factory call creates and the fork test asserts: the IMDEX token at the derived `$token` address
+with the full 1,000,000,000 supply allocated (factory balance zero afterwards); the seven
+applications at their predicted addresses with code; the distributor with code; the launch pool
+initialised with the position above; the receipt recorded. After it, `TimelockedAdmin.admin()` is
+the requester, guardian / executor / signers / quorum are unset, and the requester, operator and
+factory hold no role. `FeeHookDeployer` reports the launched token, the PoolManager literal, the
+waterfall and the native quote.
 
-The 63/64 rule is applied naturally: the factory's CREATE2 frames and every nested call receive at
-most 63/64 of the remaining gas in the fork, exactly as on mainnet.
+## The production payload, and where each field comes from
 
-## Audit findings reproduced
+| Field | Value | Source |
+| --- | --- | --- |
+| `launchNumber`, `kind` | 816, `evm_project` | launch record |
+| `$owner`, `remainderTo`, `requester` | `0x568fE872c046cF79D713323c290E33f9906B8590` | launch record `requester`; every decoded live launch sets `remainderTo = requester`; `docs/PROPOSAL.md` names the requester wallet as `$owner` |
+| `totalSupply` | 1e27 | `LaunchToken.TOTAL_SUPPLY` |
+| `poolBps` | 8800 | launch record `economics.poolBps` (the explorer page rounds this to "80%") |
+| `merkleRoot` | `0xf983212d…0a5b` | launch record `merkleRoot` (300 allocations) |
+| `contributorLockSeconds`, `sweepDelaySeconds` | 3600, 31,536,000 | identical in launches 884, 944, 1029, 1089 (policy version 18, as 816) |
+| `pairedCurrency`, `tickSpacing` | `address(0)`, 60 | manifest |
+| `sqrtPriceX96`, `tickLower`, `tickUpper` | `10000 * 2^96`, −887220, 184200 | identical in every decoded native-pair launch; the manifest's `initialPrice` is not what the factory receives |
+| `liquidity` | `88070502259298387983934` | `getLiquidityForAmount1(tick −887220, tick 184200, poolBps * supply / 10000)`; reproduces launches 944, 884, 1029 and 1089 exactly (`test/Launch816Production.t.sol`) |
+| `agentIds` | `[52121, 51318, 52271, 52167, 52120, 52128]` | the six allocation entries of the launch record that carry an agent ID, ordered by wallet; the same rule reproduces launch 944's six on-chain IDs |
+| receipt | kind, 816, `recordedAt` 0, commit word, manifest `84cbe79a…`, attestation `b32d945f…`, verifier key `68249df1…`, repo URL | launch record; `recordedAt` is 0 in every live launch; the verifier key is the same in every live launch |
 
-- **39c34447 (medium, gas margin):** reproduces exactly (numbers above). Not fixable here: the
-  missing input is the production payload, which only the launch service holds. Recorded as the
-  NO-GO item. The margin test is now part of the fork suite.
-- **72f24c4d (low, one-second heartbeat lapse):** reproduces. A permissionless `quarantineIfStale`
-  call one second past the configured heartbeat sets a sticky quarantine that a recovered feed does
-  not clear; deposits revert `PriceUnavailable` and the executor target drops to zero until a
-  timelocked `releaseQuarantine`. No source change: this follow-up verifies a fixed tree, and the
-  behaviour is the documented tighten-only design. The mitigation the finding proposes is a
-  configuration the timelock sets after launch, not a launch parameter: approve every feed with a
-  heartbeat above the feed's nominal one (README step 5/6 already says so). The reproduction and
-  the mitigation are pinned in `test/StaleFeedQuarantine.t.sol`. Residual risk: a two-day deposit
-  outage any address can cause at the cost of one transaction if governance configures heartbeats
-  at exactly the feed's nominal value.
-- **844c6bee (info, manifest kind):** confirmed. `launch.json` is an `evm_project` manifest with a
-  token block, pool block and `$token`; the pinned protected check for this review is the
-  contracts-only floor, which passes with manifest-resolved inputs but does not exercise `$token`,
-  the distributor or the pool. The full path passes only in the fork suite. Not a code defect; no
-  launch parameter was changed.
-- **33127cb2 (info, provenance):** resolved. The accepted repair submission's `verifiedTreeHash`
-  is `b8800af76ee7df5b312018e26ee518f44636da27`, the tree of `3a26e979`; `c6a77b2` is the worker's
-  local bundle commit. No attestation over the repaired tree exists yet (item 5).
+The three receipt words the service will regenerate for the repaired tree are the only fields not
+taken from a record of 816 itself. Their values cannot change the storage cost of the receipt and
+change calldata cost by at most 12 gas per byte; the worst case is measured above.
 
-## Repaired tree, as built
+## 5. Unresolved risks, in priority order
 
-| Contract | Creation keccak256 | Runtime bytes |
-| --- | --- | ---: |
-| TimelockedAdmin | `0x00f6d88be45e0ae3729da9525dd10ae9fe366ccb48f4935df636e6c8aa2f0398` | 6,086 |
-| AssetRegistry | `0xd77b24e376e7745f3d256498e1e7f46863241a7dc685d7a46c813fe62489eecb` | 8,830 |
-| EpochManager | `0xe361d1e8e840556bcd9080f8b2e59bba121836976b46c3c12e85120c03388a42` | 13,405 |
-| IndexVault | `0xb5c557b8c5f94df04ae77c0304e7091fd1b58cb9c895e71794285137e7876a70` | 11,418 |
-| RebalanceExecutor | `0x283ebd0414dc294defb1cbec67fe46b39ac82403339b41bddecd11230e3fc1b6` | 9,364 |
-| FeeWaterfall | `0x3aae82b3de37d979fba2aaf4161761706904e1d7913b2dd4c278e80f13cc39c5` | 6,330 |
-| FeeHookDeployer | `0xe71c41f1675b54ecbaa9a3bbf4d8b5890bf02ad3ab61c113cf883c9fc33959b6` | 2,020 |
-| FeeHook (deployed later) | `0x3527a2fdedacc3bb73f0845bdecb050a1f7f4abb6bf022fca740262181b0a6cc` | 4,849 |
-
-Predicted addresses for factory `0xfF03…7120`, salts `keccak256(abi.encode(uint64(816), i))`:
-`0x05b624c67e261E8584647DEe9E7AA3a169e58Dcc`, `0x089b18bdE9Ac1E2996c3418B16beA7C7fEB16F4D`,
-`0x9773fCCb301EeD020289e0BC28F01237D634D590`, `0x649b3d895096BAB99aAA00Beed19B20A44D1Cf14`,
-`0x087d279022B834Ce70469eF6b60eFC4C7c084E14`, `0x6c9139A65773F6ca69C77Ce0c3D5E96FAb71BF0B`,
-`0x53B046656B07399E78A7E5Af150C6Be5f1c24a11`; token `0x1787f33BbB7A0E03c33FD157ff7BcaA94a52B3a4`.
-These hold only for this factory, this token creation code and these salts; the service recomputes
-them from its own attested build.
-
-## Unresolved risks, in priority order
-
-1. Production payload gas (NO-GO item). Resolution: the launch service simulates its exact payload
-   against tree `b8800af7…` and publishes the gas used. If it exceeds the cap, the fix is on the
-   payload side (fewer agent IDs in the atomic call, shorter receipt URL) or a further bytecode
-   reduction in a new repair job; nothing in this follow-up changes either.
-2. No attestation over the repaired tree yet. Resolution: the service attests `3a26e979` /
-   `b8800af7…` and recomputes manifest hash, per-contract hashes and addresses.
-3. Heartbeat configuration (low). Resolution: governance approves feeds with slack above the
-   nominal heartbeat.
-4. Out of scope and still open from the repair: economic fork validation against live tokens,
-   feeds and routers, and an independent audit before real funds (`docs/SECURITY.md`).
+1. **Attestation over the repaired tree.** The service must attest `3a26e979` / `b8800af7…`,
+   recompute the manifest hash, per-contract hashes and addresses from its own build, and resolve
+   `$token` from the token creation code it deploys (a drift there is not caught by the address
+   check: `test/Launch816Resolution.t.sol`). Gas effect: ≤ 156 gas, measured.
+2. **Reconstructed, not handed over.** The payload was rebuilt from the service's public records
+   and from the shape of its live transactions. If the service's final call differs (a changed
+   allocation snapshot, a different agent list, another pool share), the margin changes by
+   23,203 gas per agent ID and 22,767 per extra URL word; up to six more agent IDs still fit.
+   The service should compare its final call against the table above before sending it.
+3. **Heartbeat configuration (low).** Unchanged from the previous report: governance should
+   approve feeds with slack above the nominal heartbeat (`test/StaleFeedQuarantine.t.sol`).
+4. **Out of scope and still open:** economic fork validation against live tokens, feeds and
+   routers, and an independent audit before real funds (`docs/SECURITY.md`).
 
 ## How this was checked
 
 ```sh
 forge build
-forge test                                   # 287 passed, 1 skipped (fork)
-forge test --match-contract Launch816ForkTest --no-isolate \
-  --fork-url <archive RPC> --fork-block-number 26137298 -vv   # 3 passed
+forge test                                  # offline suite; fork suites skip
+forge fmt --check
+forge test --match-contract 'Launch816ProductionForkTest|Launch816ForkTest' --no-isolate \
+  --fork-url <archive RPC> --fork-block-number 26137298 -vv      # 6 passed
 ```
 
-The pinned protected check was run from a scratch copy with `IMD_PROJECT_FACTORY`,
-`IMD_PROJECT_CHAIN_ID=1`, `IMD_PROJECT_COUNT=7` and the seven `IMD_PROJECT_CODE_i` /
-`IMD_PROJECT_SALT_i` / `IMD_PROJECT_ADDRESS_i` values resolved as above; it passed.
-`test/Launch816Record.t.sol` applies the same opcode and size scan offline after a harness launch.
-Slither and Mythril were not run here; the verifier's own slither and aderyn passes are recorded in
-the repair job's work record. No wallet key was read and nothing was broadcast.
+Fork runs used `https://eth.drpc.org` on 2026-10-09. No wallet key was read and nothing was
+broadcast. Slither and Mythril were not run; the verifier's own slither and aderyn passes are in the
+repair job's work record.
