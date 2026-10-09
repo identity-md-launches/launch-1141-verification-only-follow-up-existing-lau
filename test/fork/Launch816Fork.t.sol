@@ -67,6 +67,39 @@ contract Launch816ForkTest is Launch816Fixture {
         assertEq(deployer.hook(), address(0));
     }
 
+    /// @dev Verification follow-up (docs/VERIFICATION-816.md): the rehearsal margin is smaller than
+    /// the cost of one agent ID or one extra calldata word in the receipt URL. The production
+    /// payload is not known to this repository, so the measured total is an estimate, not a bound.
+    function testFork_marginIsBelowOneAgentIdOrOneCalldataWord() public {
+        uint256 snap = vm.snapshotState();
+        (ILaunch816Factory.Launch memory p,) = _rehearsal(false);
+        (bool ok,, uint256 twelve) = _callWithBudget(p, 30_000_000);
+        assertTrue(ok);
+        assertLe(twelve, TX_GAS_CAP, "rehearsal payload fits");
+        vm.revertToState(snap);
+
+        snap = vm.snapshotState();
+        (p,) = _rehearsal(false);
+        p.agentIds = new uint256[](13);
+        for (uint256 i; i < 13; ++i) {
+            p.agentIds[i] = i + 1;
+        }
+        uint256 thirteen;
+        (ok,, thirteen) = _callWithBudget(p, 30_000_000);
+        assertTrue(ok);
+        assertGt(thirteen, TX_GAS_CAP, "one more agent ID exceeds the cap");
+        emit log_named_uint("gas per extra agent ID", thirteen - twelve);
+        vm.revertToState(snap);
+
+        (p,) = _rehearsal(false);
+        p.receipt.sourceRepoUrl = string.concat(p.receipt.sourceRepoUrl, "/tree/3a26e979a5198fa515ded5a32e2");
+        uint256 longerUrl;
+        (ok,, longerUrl) = _callWithBudget(p, 30_000_000);
+        assertTrue(ok);
+        assertGt(longerUrl, TX_GAS_CAP, "one more receipt URL word exceeds the cap");
+        emit log_named_uint("gas per extra URL word", longerUrl - twelve);
+    }
+
     function _rehearsal(bool legacy) private view returns (ILaunch816Factory.Launch memory p, address token) {
         (p, token) = _payload(FACTORY, legacy);
         // A token-only position at the manifest price, exercising allocation and initialization.
@@ -88,5 +121,17 @@ contract Launch816ForkTest is Launch816Fixture {
         emit log_named_uint("intrinsic gas", intrinsic);
         emit log_named_uint("execution gas (including relay overhead)", execution);
         emit log_named_uint("total gas upper bound", totalGas);
+    }
+
+    /// @dev Unconstrained measurement: how much the payload would need, not whether it fits.
+    function _callWithBudget(ILaunch816Factory.Launch memory p, uint256 budget)
+        private
+        returns (bool ok, bytes memory result, uint256 totalGas)
+    {
+        bytes memory data = abi.encodeCall(ILaunch816Factory.launch, (p));
+        uint256 execution;
+        (ok, result, execution) = new Launch816Caller().callFactory(FACTORY, data, budget, OPERATOR);
+        totalGas = _intrinsicGas(data) + execution;
+        emit log_named_uint("total gas (unconstrained budget)", totalGas);
     }
 }

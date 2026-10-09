@@ -281,6 +281,7 @@ fork coverage or long fuzz campaigns. Passing tests are not an audit.
 ## Documents
 
 - `docs/LAUNCH-816.md` — deployment failure diagnosis, gas measurements, reproduction and release parameters.
+- `docs/VERIFICATION-816.md` — verification-only follow-up: GO / NO-GO report for the repaired commit.
 - `docs/METHODOLOGY.md` — eligibility, ranking formula, weights, buffers, stale-data rules, proposal and report formats, swarm workflow.
 - `docs/SECURITY.md` — trust model, what each test suite covers, known limitations, requirements before real funds.
 - `docs/PROPOSAL.md` — milestones, audit scope, gas assumptions, timeline, ownership, handoff, support.
